@@ -59,6 +59,23 @@ test("something said in the past carries its date", async () => {
   assert.deepEqual(JSON.parse(calls[3].body).items, [{ text: "One.", said_at: "2024-01-02" }, { text: "Two." }]);
 });
 
+test("sources are listed and deleted by label", async () => {
+  let left = 3;
+  const { g, calls } = make((c) => {
+    if (c.method === "GET") return [200, { sources: [{ ...SOURCE, labels: { channel: "gmail" } }], total: 1, next: null }];
+    const took = Math.min(2, left);
+    left -= took;
+    return [200, { sources_deleted: took, more: left > 0, labels: { channel: "gmail" } }];
+  });
+  const page = await g.sources.list({ labels: { channel: "gmail" } });
+  assert.deepEqual(page.sources[0].labels, { channel: "gmail" });
+  assert.deepEqual(calls[0].url.searchParams.getAll("label"), ["channel:gmail"]);
+  assert.equal(await g.sources.deleteLabelled({ channel: ["gmail", "outlook"] }), 3);
+  assert.deepEqual(calls.slice(1).map((c) => c.method), ["DELETE", "DELETE"]);
+  assert.deepEqual(calls[2].url.searchParams.getAll("label"), ["channel:gmail", "channel:outlook"]);
+  await assert.rejects(g.sources.deleteLabelled({}), /Name the labels/);
+});
+
 test("labels go with every add, and a filter with every read", async () => {
   const { g, calls } = make((c) => {
     const path = c.url.pathname;

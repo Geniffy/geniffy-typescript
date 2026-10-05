@@ -629,11 +629,35 @@ export class Sections {
   }
 }
 
+// Each call deletes up to 100 sources and says whether more carry the labels; this many calls is the most one
+// deleteLabelled() makes, so a filter that somehow keeps matching cannot loop for ever.
+const LABELLED_CALLS = 1000;
+
 export class Sources {
   constructor(private readonly client: Geniffy) {}
 
-  list(opts: { limit?: number; cursor?: number } = {}): Promise<SourcePage> {
-    return this.client.request<SourcePage>("GET", "/v1/sources", { query: { limit: opts.limit ?? 100, cursor: opts.cursor ?? 0 } });
+  /** What was added, newest first; with labels, only the sources carrying them. */
+  list(opts: { limit?: number; cursor?: number; labels?: LabelFilter } = {}): Promise<SourcePage> {
+    return this.client.request<SourcePage>("GET", "/v1/sources", {
+      query: { limit: opts.limit ?? 100, cursor: opts.cursor ?? 0, label: labelQuery(opts.labels) },
+    });
+  }
+
+  /** Delete every source carrying these labels, and every memory learned only from them: the call when your
+   *  user disconnects a data source whose things you added under its label. Resolves to how many. */
+  async deleteLabelled(labels: LabelFilter): Promise<number> {
+    if (!labels || !Object.keys(labels).length) {
+      throw new TypeError('Name the labels whose sources to delete, such as { channel: "gmail" }.');
+    }
+    let total = 0;
+    for (let i = 0; i < LABELLED_CALLS; i++) {
+      const out = await this.client.request<{ sources_deleted: number; more: boolean }>("DELETE", "/v1/sources", {
+        query: { label: labelQuery(labels) },
+      });
+      total += out.sources_deleted ?? 0;
+      if (!out.more) break;
+    }
+    return total;
   }
 
   /** A source, by its id or as { externalId } (a NotFoundError when no source has that external id). */
