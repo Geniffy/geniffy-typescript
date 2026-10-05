@@ -388,20 +388,34 @@ export interface ChatMessage {
   name?: string;
 }
 
+/** When a note or conversation from the past was said: a Date, or an ISO 8601 string (2026-03-04,
+ *  2026-03-04T09:30:00Z). What it teaches is dated by it. Left out, now. */
+export interface SaidAt {
+  saidAt?: Date | string;
+}
+
 export type AddInput =
   | string
-  | { text: string; title?: string }
+  | ({ text: string; title?: string } & SaidAt)
   | { url: string; title?: string }
   /** A conversation as your framework already holds it. System and developer messages are skipped, and
    *  who said what is kept, so the user's words become facts about the user and not about your assistant. */
-  | { messages: ChatMessage[]; title?: string };
+  | ({ messages: ChatMessage[]; title?: string } & SaidAt);
+
+// The body the API takes: saidAt goes as said_at, a Date as its moment in UTC.
+function addBody(input: AddInput): Record<string, unknown> {
+  const given = typeof input === "string" ? { text: input } : input;
+  const { saidAt, ...rest } = given as typeof given & SaidAt;
+  if (saidAt === undefined) return rest;
+  return { ...rest, said_at: saidAt instanceof Date ? saidAt.toISOString() : String(saidAt) };
+}
 
 export class Memories {
   constructor(private readonly client: Geniffy) {}
 
   /** Add a note (a string or { text }), or a web page ({ url }) that Geniffy reads once. */
   async add(input: AddInput): Promise<Source> {
-    const json = typeof input === "string" ? { text: input } : input;
+    const json = addBody(input);
     const out = await this.client.request<{ source: Source }>("POST", "/v1/memories", { json });
     return out.source;
   }
@@ -423,7 +437,7 @@ export class Memories {
    * the order you sent it, with either its source or why it was refused.
    */
   async addMany(items: AddInput[]): Promise<BatchResult> {
-    const json = { items: items.map((i) => (typeof i === "string" ? { text: i } : i)) };
+    const json = { items: items.map(addBody) };
     return this.client.request<BatchResult>("POST", "/v1/memories/batch", { json });
   }
 

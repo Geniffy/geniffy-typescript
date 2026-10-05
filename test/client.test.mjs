@@ -47,6 +47,18 @@ test("adding a note, a link and a file", async () => {
   assert.equal(calls[2].body.get("title"), "Pricing");
 });
 
+test("something said in the past carries its date", async () => {
+  const { g, calls } = make(() => [201, { source: SOURCE }]);
+  await g.memories.add({ messages: [{ role: "user", content: "We moved the launch to May." }], saidAt: new Date("2025-03-04T09:30:00Z") });
+  assert.equal(JSON.parse(calls[0].body).said_at, "2025-03-04T09:30:00.000Z");
+  await g.memories.add({ text: "Priya signs the renewal.", saidAt: "2025-03-04" });
+  assert.deepEqual(JSON.parse(calls[1].body), { text: "Priya signs the renewal.", said_at: "2025-03-04" });
+  await g.memories.add("No date.");
+  assert.deepEqual(JSON.parse(calls[2].body), { text: "No date." });
+  await g.memories.addMany([{ text: "One.", saidAt: "2024-01-02" }, "Two."]);
+  assert.deepEqual(JSON.parse(calls[3].body).items, [{ text: "One.", said_at: "2024-01-02" }, { text: "Two." }]);
+});
+
 test("listing pages through every memory, and asking", async () => {
   const { g } = make((c) => {
     if (c.url.pathname === "/v1/memories") {
