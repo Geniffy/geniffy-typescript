@@ -59,6 +59,15 @@ test("something said in the past carries its date", async () => {
   assert.deepEqual(JSON.parse(calls[3].body).items, [{ text: "One.", said_at: "2024-01-02" }, { text: "Two." }]);
 });
 
+test("export is the user's own copy", async () => {
+  const { g, calls } = make(() => [200, { exported_at: "2026-10-06T00:00:00+00:00", stored_in: "x",
+    memories: [{ ...MEM, status: "current", quote: "q" }], sources: [SOURCE] }]);
+  const out = await g.space("customer_1042").export();
+  assert.equal(out.memories[0].quote, "q");
+  assert.equal(calls[0].url.pathname, "/v1/export");
+  assert.equal(calls[0].headers["X-Geniffy-Space"], "customer_1042");
+});
+
 test("sources are listed and deleted by label", async () => {
   let left = 3;
   const { g, calls } = make((c) => {

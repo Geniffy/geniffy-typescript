@@ -362,6 +362,12 @@ User: ${question}`;
     return this.request<Graph>("GET", "/v1/graph");
   }
 
+  /** Everything held, as the user's own copy: every memory, current or not, with its status and the sentence it
+   *  came from, and every source. On client.space(id), for a user who asks what you hold about them. */
+  export(): Promise<Export> {
+    return this.request<Export>("GET", "/v1/export");
+  }
+
   /** Whose key this is, and which space this client is reading. */
   me(): Promise<{ name: string | null; memory: string; space: string | null }> {
     return this.request("GET", "/v1/me");
@@ -411,6 +417,15 @@ export interface Brief {
   summary: string | null;
   memories: Memory[];
   total: number;
+}
+
+/** A user's own copy of what is held. */
+export interface Export {
+  exported_at: string;
+  /** where the memory is kept */
+  stored_in: string;
+  memories: (Memory & { quote?: string | null })[];
+  sources: Source[];
 }
 
 export interface Graph {
