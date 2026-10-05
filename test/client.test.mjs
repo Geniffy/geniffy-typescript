@@ -120,6 +120,20 @@ test("a key limited to one user is made, listed and revoked on that user's clien
   assert.deepEqual(JSON.parse(calls[3].body), {});
 });
 
+test("profile sections for every user, or one", async () => {
+  const { g, calls } = make((c) => c.method === "GET" ? [200, { sections: [{ id: 300, name: "billing", applies_to: "every user" }] }]
+    : c.method === "POST" ? [201, { id: 300, name: "billing", applies_to: "every user" }] : [200, { id: 300, deleted: true }]);
+  await g.sections.create({ name: "Billing", keywords: ["invoice"] });
+  assert.equal(calls[0].headers["X-Geniffy-Space"], undefined, "the plain client: every user");
+  assert.deepEqual(JSON.parse(calls[0].body), { name: "Billing", description: "", keywords: ["invoice"], topics: [] });
+  await g.space("customer_42").sections.create({ name: "Allergies", topics: ["diet"] });
+  assert.equal(calls[1].headers["X-Geniffy-Space"], "customer_42");
+  assert.equal((await g.sections.list())[0].name, "billing");
+  await g.sections.delete(300);
+  assert.equal(calls[3].method, "DELETE");
+  assert.equal(calls[3].url.pathname, "/v1/profile/sections/300");
+});
+
 test("listing pages through every memory, and asking", async () => {
   const { g } = make((c) => {
     if (c.url.pathname === "/v1/memories") {

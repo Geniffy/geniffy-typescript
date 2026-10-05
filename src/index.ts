@@ -190,6 +190,8 @@ export class Geniffy {
   readonly sources: Sources;
   /** Keys limited to one of your users, on a client bound to them: client.space(id).keys */
   readonly keys: Keys;
+  /** The sections profiles are grouped into: every user's on the plain client, one user's on client.space(id) */
+  readonly sections: Sections;
   readonly maxRetries: number;
   readonly timeout: number;
   /** The one of your users this client is bound to, or "" for your own memory. */
@@ -214,6 +216,7 @@ export class Geniffy {
     this.memories = new Memories(this);
     this.sources = new Sources(this);
     this.keys = new Keys(this);
+    this.sections = new Sections(this);
   }
 
   /**
@@ -551,6 +554,40 @@ export class Keys {
   /** One of this user's keys stops at once. */
   async revoke(id: number): Promise<void> {
     await this.client.request("DELETE", `/v1/keys/${Math.trunc(id)}`);
+  }
+}
+
+/** A section a profile is grouped into. */
+export interface Section {
+  id?: number | null;
+  name: string;
+  description?: string;
+  keywords?: string[];
+  topics?: string[];
+  /** "every user", "this user" or "built in" */
+  applies_to?: string;
+}
+
+/** The sections profiles are grouped into. On the plain client, for every one of your users; on a client bound
+ *  to one user (`client.space(id).sections`), for that user only. A memory goes in a section when one of its
+ *  keywords appears in it, or its topic is one of the section's. */
+export class Sections {
+  constructor(private readonly client: Geniffy) {}
+
+  /** The sections, the app's own first, then the built-in ones. */
+  async list(): Promise<Section[]> {
+    return (await this.client.request<{ sections: Section[] }>("GET", "/v1/profile/sections")).sections;
+  }
+
+  /** Add a section (or, under a name it already has, update it). Profiles regroup within a minute or so. */
+  create(section: { name: string; keywords?: string[]; topics?: string[]; description?: string }): Promise<Section> {
+    const json = { name: section.name, description: section.description ?? "", keywords: section.keywords ?? [],
+                   topics: section.topics ?? [] };
+    return this.client.request<Section>("POST", "/v1/profile/sections", { json });
+  }
+
+  async delete(id: number): Promise<void> {
+    await this.client.request("DELETE", `/v1/profile/sections/${Math.trunc(id)}`);
   }
 }
 
