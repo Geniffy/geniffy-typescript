@@ -11,7 +11,7 @@
  * 429, so a retry never saves a note twice.
  */
 
-export const VERSION = "0.1.1";
+export const VERSION = "0.2.0";
 export const DEFAULT_BASE_URL = "https://api.geniffy.com";
 
 export type Kind = "all" | "people" | "plan" | "pref" | "detail";

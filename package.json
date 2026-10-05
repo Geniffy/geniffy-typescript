@@ -1,6 +1,6 @@
 {
   "name": "geniffy",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Geniffy for TypeScript and JavaScript: add notes, files and links to a memory, then search it and ask it.",
   "type": "module",
   "main": "./dist/index.js",
