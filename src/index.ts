@@ -670,11 +670,15 @@ export class Sources {
   }
 
   /** Delete every source carrying these labels, and every memory learned only from them: the call when your
-   *  user disconnects a data source whose things you added under its label. Resolves to how many. */
-  async deleteLabelled(labels: LabelFilter): Promise<number> {
+   *  user disconnects a data source whose things you added under its label. Resolves to how many.
+   *
+   *  `keep`: the external ids to leave, for the end of a sync that read everything: every other source with
+   *  these labels, such as what is gone from the data source, is deleted. */
+  async deleteLabelled(labels: LabelFilter, opts: { keep?: Iterable<string> } = {}): Promise<number> {
     if (!labels || !Object.keys(labels).length) {
       throw new TypeError('Name the labels whose sources to delete, such as { channel: "gmail" }.');
     }
+    if (opts.keep !== undefined) return this.deleteAllBut(labels, opts.keep);
     let total = 0;
     for (let i = 0; i < LABELLED_CALLS; i++) {
       const out = await this.client.request<{ sources_deleted: number; more: boolean }>("DELETE", "/v1/sources", {
@@ -684,6 +688,28 @@ export class Sources {
       if (!out.more) break;
     }
     return total;
+  }
+
+  private async deleteAllBut(labels: LabelFilter, keep: Iterable<string>): Promise<number> {
+    // one id on its own would read as its letters, and keep nothing
+    if (typeof keep === "string") throw new TypeError("keep is a list or set of external ids, not one id.");
+    const kept = new Set(Array.from(keep, String));
+    const gone: string[] = [];
+    for (let cursor: number | null = 0; cursor !== null; ) {   // the whole list first: deleting moves the pages
+      const page: SourcePage = await this.list({ labels, cursor });
+      for (const s of page.sources) if (!(s.external_id != null && kept.has(s.external_id))) gone.push(s.id);
+      cursor = page.next;
+    }
+    let deleted = 0;
+    for (const id of gone) {
+      try {
+        await this.delete(id);
+        deleted++;
+      } catch (e) {
+        if (!(e instanceof NotFoundError)) throw e;            // deleted meanwhile: gone either way
+      }
+    }
+    return deleted;
   }
 
   /** A source, by its id or as { externalId } (a NotFoundError when no source has that external id). */

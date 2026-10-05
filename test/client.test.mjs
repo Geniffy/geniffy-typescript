@@ -96,6 +96,22 @@ test("sources are listed and deleted by label", async () => {
   await assert.rejects(g.sources.deleteLabelled({}), /Name the labels/);
 });
 
+test("a delete by label can keep what a sync still has", async () => {
+  const held = [{ ...SOURCE, id: "s1", external_id: "drive:a" }, { ...SOURCE, id: "s2", external_id: "drive:b" }, { ...SOURCE, id: "s3" }];
+  const { g, calls } = make((c) => {
+    if (c.method === "GET") {
+      const i = Number(c.url.searchParams.get("cursor") ?? 0);
+      return [200, { sources: [held[i]], total: 3, next: i < 2 ? i + 1 : null }];
+    }
+    if (c.url.pathname.endsWith("/s3")) return [404, { error: { code: "not_found", message: "No such source." } }];
+    return [200, { id: "s2", deleted: true }];
+  });
+  assert.equal(await g.sources.deleteLabelled({ channel: "drive" }, { keep: new Set(["drive:a"]) }), 1);
+  assert.deepEqual(calls.map((c) => c.method), ["GET", "GET", "GET", "DELETE", "DELETE"]);
+  assert.deepEqual(calls.filter((c) => c.method === "DELETE").map((c) => c.url.pathname), ["/v1/sources/s2", "/v1/sources/s3"]);
+  await assert.rejects(g.sources.deleteLabelled({ channel: "drive" }, { keep: "drive:a" }), /not one id/);
+});
+
 test("labels go with every add, and a filter with every read", async () => {
   const { g, calls } = make((c) => {
     const path = c.url.pathname;
