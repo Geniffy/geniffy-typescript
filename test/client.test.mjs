@@ -59,6 +59,49 @@ test("something said in the past carries its date", async () => {
   assert.deepEqual(JSON.parse(calls[3].body).items, [{ text: "One.", said_at: "2024-01-02" }, { text: "Two." }]);
 });
 
+test("labels go with every add, and a filter with every read", async () => {
+  const { g, calls } = make((c) => {
+    const path = c.url.pathname;
+    if (path === "/v1/ask") return [200, { question: "q", answer: null, message: "nothing", memories: [] }];
+    if (path === "/v1/context") return [200, { question: "q", context: "- x", memories: [], used: 0, empty: false }];
+    if (path === "/v1/search" || (c.method === "GET" && path === "/v1/memories")) {
+      return [200, { memories: [MEM], counts: {}, total: 1, next: null }];
+    }
+    if (path === "/v1/brief") return [200, { subject: null, memories: [], total: 0 }];
+    return [201, { source: { ...SOURCE, labels: { channel: "email" } } }];
+  });
+  const last = () => calls[calls.length - 1];
+  const body = () => JSON.parse(last().body);
+  const src = await g.memories.add({ text: "Lumen renews in March.", labels: { channel: "email" } });
+  assert.deepEqual(src.labels, { channel: "email" });
+  assert.deepEqual(body(), { text: "Lumen renews in March.", labels: { channel: "email" } });
+  await g.memories.add({ messages: [{ role: "user", content: "I moved to Pune." }], labels: { team: "sales" } });
+  assert.deepEqual(body().labels, { team: "sales" });
+  await g.memories.add({ url: "https://acme.test", labels: {} });
+  assert.deepEqual(body().labels, {}, "{} goes, so a source's labels can be cleared");
+  await g.memories.add("No labels.");
+  assert.equal(body().labels, undefined);
+  await g.memories.addFile(new TextEncoder().encode("%PDF-1.7"), { filename: "plan.pdf", labels: { channel: "drive" } });
+  assert.equal(last().body.get("labels"), '{"channel":"drive"}');
+
+  const either = { channel: ["email", "chat"], team: "sales" };
+  await g.search("lumen", { labels: either });
+  assert.deepEqual(body(), { q: "lumen", limit: 10, labels: either });
+  await g.context("Who signs?", { labels: { channel: "chat" } });
+  assert.deepEqual(body().labels, { channel: "chat" });
+  await g.ask("Who signs?", { labels: { channel: "chat" } });
+  assert.deepEqual(body(), { question: "Who signs?", labels: { channel: "chat" } });
+  await g.memories.list({ labels: either });
+  assert.deepEqual(last().url.searchParams.getAll("label"), ["channel:email", "channel:chat", "team:sales"]);
+  await g.brief("Priya", { labels: { channel: "email" } });
+  assert.deepEqual(last().url.searchParams.getAll("label"), ["channel:email"]);
+  assert.equal(last().url.searchParams.get("subject"), "Priya");
+  await g.search("lumen");
+  assert.equal(body().labels, undefined, "no filter, no field");
+  for await (const m of g.memories.iterate({ labels: { channel: "email" } })) assert.equal(m.id, MEM.id);
+  assert.deepEqual(last().url.searchParams.getAll("label"), ["channel:email"]);
+});
+
 test("your own id goes with every add, and finds and deletes the source", async () => {
   // Sending again under the same externalId updates that source on Geniffy's side; the client's part is to
   // send the id with a note, a conversation, a link and a file, and to find and delete by it.

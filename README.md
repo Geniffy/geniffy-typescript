@@ -84,6 +84,16 @@ await mem.sources.get({ externalId: `ticket-${ticket.id}` });
 await mem.sources.delete({ externalId: `ticket-${ticket.id}` });   // when the ticket is deleted in your app
 ```
 
+Label what you add with your own name/value pairs, then keep any read to them. Every name must match, and a
+list of values is any one of them.
+
+```ts
+await mem.memories.add({ text: email.body, title: email.subject, labels: { channel: "email", account: "lumen" } });
+await mem.context("When does the renewal come up?", { labels: { account: "lumen" } });
+await mem.search("pricing", { labels: { channel: ["email", "chat"] } });
+await mem.memories.list({ labels: { account: "lumen" } });
+```
+
 ## Read and correct
 
 ```ts

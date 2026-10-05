@@ -65,6 +65,20 @@ export interface Source {
   added_at?: string | null;
   /** your own id for it, when you gave one */
   external_id?: string | null;
+  /** your own name/value pairs on it */
+  labels?: Labels;
+}
+
+/** A source's labels: your own name/value pairs, such as { channel: "email" }. */
+export type Labels = Record<string, string>;
+/** A filter by labels: every name must match, and a list of values is any one of them
+ *  ({ channel: ["email", "chat"] }). */
+export type LabelFilter = Record<string, string | string[]>;
+
+/** A filter in a query string: label=name:value, once for each value. */
+function labelQuery(labels?: LabelFilter): string[] | undefined {
+  if (!labels) return undefined;
+  return Object.entries(labels).flatMap(([k, v]) => (Array.isArray(v) ? v : [v]).map((x) => `${k}:${x}`));
 }
 
 export interface SourcePage {
@@ -183,7 +197,7 @@ function delay(attempt: number, response?: Response): number {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-type Body = { json?: unknown; form?: FormData; query?: Record<string, string | number | undefined> };
+type Body = { json?: unknown; form?: FormData; query?: Record<string, string | number | string[] | undefined> };
 
 export class Geniffy {
   readonly memories: Memories;
@@ -239,7 +253,10 @@ export class Geniffy {
   /** @internal */
   async request<T>(method: "GET" | "POST" | "DELETE" | "PATCH", path: string, body: Body = {}): Promise<T> {
     const url = new URL(this.#base + path);
-    for (const [k, v] of Object.entries(body.query ?? {})) if (v !== undefined) url.searchParams.set(k, String(v));
+    for (const [k, v] of Object.entries(body.query ?? {})) {
+      if (Array.isArray(v)) for (const each of v) url.searchParams.append(k, each);
+      else if (v !== undefined) url.searchParams.set(k, String(v));
+    }
     const headers: Record<string, string> = {
       Authorization: `Bearer ${this.#key}`,
       Accept: "application/json",
@@ -287,14 +304,18 @@ export class Geniffy {
     }
   }
 
-  /** An answer from your memory only. `answer` is null when nothing you added supports one. */
-  ask(question: string): Promise<Answer> {
-    return this.request<Answer>("POST", "/v1/ask", { json: { question } });
+  /** An answer from your memory only. `answer` is null when nothing you added supports one. With labels, only
+   *  from what the sources carrying them said. */
+  ask(question: string, opts: { labels?: LabelFilter } = {}): Promise<Answer> {
+    return this.request<Answer>("POST", "/v1/ask", { json: { question, labels: opts.labels } });
   }
 
-  /** The memories that best match `q`, best first. */
-  async search(q: string, opts: { limit?: number; kind?: Kind } = {}): Promise<Memory[]> {
-    const out = await this.request<MemoryPage>("POST", "/v1/search", { json: { q, limit: opts.limit ?? 10, kind: opts.kind } });
+  /** The memories that best match `q`, best first. `labels: { channel: "email" }` keeps to the sources
+   *  carrying them: every name must match, and a list of values is any one of them. */
+  async search(q: string, opts: { limit?: number; kind?: Kind; labels?: LabelFilter } = {}): Promise<Memory[]> {
+    const out = await this.request<MemoryPage>("POST", "/v1/search", {
+      json: { q, limit: opts.limit ?? 10, kind: opts.kind, labels: opts.labels },
+    });
     return out.memories;
   }
 
@@ -309,15 +330,18 @@ User: ${question}`;
    * written here once. It is never empty: when nothing is held it says so in words, because an
    * empty block reads to a model as permission to invent.
    */
-  async context(question: string, opts: { limit?: number; kind?: Kind; withSources?: boolean } = {}): Promise<string> {
+  async context(question: string,
+                opts: { limit?: number; kind?: Kind; withSources?: boolean; labels?: LabelFilter } = {}): Promise<string> {
     const out = await this.contextFull(question, opts);
     return out.context;
   }
 
   /** The same, with the memories behind it and whether anything was found. */
-  contextFull(question: string, opts: { limit?: number; kind?: Kind; withSources?: boolean } = {}): Promise<ContextResult> {
+  contextFull(question: string,
+              opts: { limit?: number; kind?: Kind; withSources?: boolean; labels?: LabelFilter } = {}): Promise<ContextResult> {
     return this.request<ContextResult>("POST", "/v1/context", {
-      json: { question, limit: opts.limit ?? 12, kind: opts.kind, with_sources: opts.withSources ?? true },
+      json: { question, limit: opts.limit ?? 12, kind: opts.kind, with_sources: opts.withSources ?? true,
+              labels: opts.labels },
     });
   }
 
@@ -327,8 +351,8 @@ User: ${question}`;
   }
 
   /** What to read before dealing with someone. */
-  brief(subject?: string, opts: { limit?: number } = {}): Promise<Brief> {
-    return this.request<Brief>("GET", "/v1/brief", { query: { subject, limit: opts.limit } });
+  brief(subject?: string, opts: { limit?: number; labels?: LabelFilter } = {}): Promise<Brief> {
+    return this.request<Brief>("GET", "/v1/brief", { query: { subject, limit: opts.limit, label: labelQuery(opts.labels) } });
   }
 
   /** What the memory holds and what connects to what. Every line has a memory behind it. */
@@ -426,13 +450,20 @@ export interface ExternalId {
   externalId?: string;
 }
 
+/** Up to 20 of your own name/value pairs ({ channel: "email", project: "apollo" }) to filter search, context,
+ *  ask, list and brief by. Sent again under the same externalId they replace the old ones, with nothing learned
+ *  again; left out, they are kept; {} clears them. */
+export interface WithLabels {
+  labels?: Labels;
+}
+
 export type AddInput =
   | string
-  | ({ text: string; title?: string } & SaidAt & ExternalId)
-  | ({ url: string; title?: string } & ExternalId)
+  | ({ text: string; title?: string } & SaidAt & ExternalId & WithLabels)
+  | ({ url: string; title?: string } & ExternalId & WithLabels)
   /** A conversation as your framework already holds it. System and developer messages are skipped, and
    *  who said what is kept, so the user's words become facts about the user and not about your assistant. */
-  | ({ messages: ChatMessage[]; title?: string } & SaidAt & ExternalId);
+  | ({ messages: ChatMessage[]; title?: string } & SaidAt & ExternalId & WithLabels);
 
 // The body the API takes: saidAt goes as said_at, a Date as its moment in UTC; externalId as external_id.
 function addBody(input: AddInput): Record<string, unknown> {
@@ -465,7 +496,7 @@ export class Memories {
 
   /** Add a PDF or Word (.docx) file. Under an externalId, a new version updates the source that id names. */
   async addFile(file: Blob | ArrayBuffer | Uint8Array,
-                opts: { filename?: string; title?: string } & ExternalId = {}): Promise<Source> {
+                opts: { filename?: string; title?: string } & ExternalId & WithLabels = {}): Promise<Source> {
     const blob = file instanceof Blob ? file : new Blob([file as BlobPart]);
     const named = (file as unknown as { name?: unknown }).name;
     const name = opts.filename ?? (typeof named === "string" && named ? named : "file");
@@ -473,6 +504,7 @@ export class Memories {
     form.append("file", blob, name);
     if (opts.title) form.append("title", opts.title);
     if (opts.externalId !== undefined) form.append("external_id", String(opts.externalId));
+    if (opts.labels !== undefined) form.append("labels", JSON.stringify(opts.labels));
     const out = await this.client.request<{ source: Source }>("POST", "/v1/memories/file", { form });
     return out.source;
   }
@@ -492,18 +524,18 @@ export class Memories {
     return this.client.request("PATCH", `/v1/memories/${id}`, { json: { text } });
   }
 
-  /** One page of memories, newest first. */
-  list(opts: { kind?: Kind; limit?: number; cursor?: number } = {}): Promise<MemoryPage> {
+  /** One page of memories, newest first; with labels, only what the sources carrying them said. */
+  list(opts: { kind?: Kind; limit?: number; cursor?: number; labels?: LabelFilter } = {}): Promise<MemoryPage> {
     return this.client.request<MemoryPage>("GET", "/v1/memories", {
-      query: { kind: opts.kind, limit: opts.limit ?? 50, cursor: opts.cursor ?? 0 },
+      query: { kind: opts.kind, limit: opts.limit ?? 50, cursor: opts.cursor ?? 0, label: labelQuery(opts.labels) },
     });
   }
 
   /** Every memory, newest first, a page at a time: for await (const m of g.memories.iterate()) */
-  async *iterate(opts: { kind?: Kind; pageSize?: number } = {}): AsyncGenerator<Memory> {
+  async *iterate(opts: { kind?: Kind; pageSize?: number; labels?: LabelFilter } = {}): AsyncGenerator<Memory> {
     let cursor: number | null = 0;
     while (cursor !== null) {
-      const page: MemoryPage = await this.list({ kind: opts.kind, limit: opts.pageSize ?? 100, cursor });
+      const page: MemoryPage = await this.list({ kind: opts.kind, limit: opts.pageSize ?? 100, cursor, labels: opts.labels });
       yield* page.memories;
       cursor = page.next;
     }
