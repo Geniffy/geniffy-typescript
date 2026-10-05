@@ -59,6 +59,17 @@ test("something said in the past carries its date", async () => {
   assert.deepEqual(JSON.parse(calls[3].body).items, [{ text: "One.", said_at: "2024-01-02" }, { text: "Two." }]);
 });
 
+test("an integration names itself after the SDK", async () => {
+  const { g, calls } = make(() => [200, { name: "x", memory: "personal" }], { integration: "geniffy-ai-sdk/0.1.0" });
+  await g.me();
+  await g.space("customer_1042").me();
+  assert.match(calls[0].headers["X-Geniffy-Client"], /^geniffy-js\/\S+ geniffy-ai-sdk\/0\.1\.0$/);
+  assert.equal(calls[1].headers["X-Geniffy-Client"], calls[0].headers["X-Geniffy-Client"], "kept by space() too");
+  for (const bad of ["ai sdk/1", "no-version", "a/b c"]) {
+    assert.throws(() => new Geniffy({ apiKey: KEY, integration: bad, fetch: async () => new Response("{}") }), /a name and a version/);
+  }
+});
+
 test("export is the user's own copy", async () => {
   const { g, calls } = make(() => [200, { exported_at: "2026-10-06T00:00:00+00:00", stored_in: "x",
     memories: [{ ...MEM, status: "current", quote: "q" }], sources: [SOURCE] }]);

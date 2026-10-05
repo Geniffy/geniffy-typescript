@@ -118,7 +118,12 @@ export interface ClientOptions {
    * request, so a space can never be forgotten on a call.
    */
   space?: string | number;
+  /** For a package built on this SDK: its own name and version ("geniffy-ai-sdk/0.1.0"), sent after the SDK's,
+   *  so the Requests page shows which integration made each call. */
+  integration?: string;
 }
+
+const INTEGRATION = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\/[A-Za-z0-9][A-Za-z0-9._+-]{0,31}$/;
 
 // One of your users, by your own name for them: a string, or an integer id. A blank one is refused, not
 // read as no space: a client with no space reads YOUR memory, so a user with no id would land in it.
@@ -229,6 +234,9 @@ export class Geniffy {
     this.timeout = opts.timeout ?? 60_000;
     this.maxRetries = Math.max(0, opts.maxRetries ?? 2);
     this.boundSpace = opts.space === undefined || opts.space === null ? "" : spaceName(opts.space, "space:");
+    if (opts.integration !== undefined && !INTEGRATION.test(opts.integration)) {
+      throw new TypeError('integration is a name and a version, such as "geniffy-ai-sdk/0.1.0".');
+    }
     this.memories = new Memories(this);
     this.sources = new Sources(this);
     this.keys = new Keys(this);
@@ -262,7 +270,7 @@ export class Geniffy {
     const headers: Record<string, string> = {
       Authorization: `Bearer ${this.#key}`,
       Accept: "application/json",
-      "X-Geniffy-Client": `geniffy-js/${VERSION}`,
+      "X-Geniffy-Client": `geniffy-js/${VERSION}${this.#opts.integration ? ` ${this.#opts.integration}` : ""}`,
     };
     // One header carries the space, so every call a bound client makes is scoped without any
     // method having to take it, and a space can never be dropped by forgetting an argument.
