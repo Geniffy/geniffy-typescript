@@ -11,7 +11,8 @@
 - `labels` on `memories.add`, `addMany` and `addFile`: up to 20 of your own name/value pairs on a source
   (`{ channel: "email" }`), and as a filter on `search`, `context`, `ask`, `memories.list`, `memories.iterate`
   and `brief`: every name must match, and a list of values is any one of them. `Source.labels` shows a
-  source's. Needs the API with labels (October 2026).
+  source's. `sources.list({ labels })` lists the sources carrying them, and `sources.deleteLabelled(labels)`
+  deletes them all, with what only they taught. Needs the API with labels (October 2026).
 - `sections`: the sections profiles are grouped into. `client.sections.create({ name, keywords })` adds one
   for every one of your users; on `client.space(id)`, for that user only. `list()` and `delete(id)` too.
 - `keys` on a client bound to one of your users: `client.space(id).keys.create({ name, rpm })` makes a key
