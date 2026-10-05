@@ -1,0 +1,6 @@
+node_modules/
+dist/
+*.tgz
+
+# The maintainer's own publish script stays on their machine
+publish.sh

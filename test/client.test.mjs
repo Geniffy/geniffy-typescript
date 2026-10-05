@@ -1,0 +1,153 @@
+// The built client against a fake fetch: requests, results, errors and retries.
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { Geniffy, AuthenticationError, NotFoundError, UnreadableError, InternalServerError, GeniffyError } from "../dist/index.js";
+
+const KEY = "gnf_live_" + "k".repeat(43);
+const SOURCE = { id: "a".repeat(32), kind: "note", title: "Priya Nair signs the Lumen renewal.", status: "reading" };
+const MEM = { id: 7, text: "Priya Nair signs the Lumen renewal.", kind: "people", status: "current", source: { id: "a".repeat(32), kind: "note", title: "Call with Priya" } };
+
+function fake(reply) {
+  const calls = [];
+  const fetch = async (url, init) => {
+    const call = { url: new URL(url), method: init.method, headers: init.headers, body: init.body };
+    calls.push(call);
+    const out = await reply(call, calls.length);
+    if (out instanceof Error) throw out;
+    const [status, body, headers] = out;
+    return new Response(body === undefined ? "" : JSON.stringify(body), { status, headers: { "content-type": "application/json", ...(headers ?? {}) } });
+  };
+  return { fetch, calls };
+}
+
+const make = (reply, opts = {}) => {
+  const f = fake(reply);
+  return { g: new Geniffy({ apiKey: KEY, baseURL: "https://api.test", fetch: f.fetch, ...opts }), calls: f.calls };
+};
+
+test("a key is required, and requests carry it", async () => {
+  delete process.env.GENIFFY_API_KEY;
+  assert.throws(() => new Geniffy({ fetch: async () => new Response("{}") }), /GENIFFY_API_KEY/);
+  const { g, calls } = make(() => [200, { name: "Omkar", memory: "personal" }]);
+  assert.equal((await g.me()).name, "Omkar");
+  assert.equal(calls[0].url.href, "https://api.test/v1/me");
+  assert.equal(calls[0].headers.Authorization, `Bearer ${KEY}`);
+});
+
+test("adding a note, a link and a file", async () => {
+  const { g, calls } = make((c) => [201, { source: { ...SOURCE, kind: c.url.pathname.endsWith("/file") ? "file" : "note" } }]);
+  assert.equal((await g.memories.add("Priya Nair signs the Lumen renewal.")).status, "reading");
+  assert.deepEqual(JSON.parse(calls[0].body), { text: "Priya Nair signs the Lumen renewal." });
+  await g.memories.add({ url: "https://acme.test/team", title: "Acme team" });
+  assert.deepEqual(JSON.parse(calls[1].body), { url: "https://acme.test/team", title: "Acme team" });
+  const src = await g.memories.addFile(new TextEncoder().encode("%PDF-1.7"), { filename: "Pricing.pdf", title: "Pricing" });
+  assert.equal(src.kind, "file");
+  assert.ok(calls[2].body instanceof FormData);
+  assert.equal(calls[2].body.get("file").name, "Pricing.pdf");
+  assert.equal(calls[2].body.get("title"), "Pricing");
+});
+
+test("listing pages through every memory, and asking", async () => {
+  const { g } = make((c) => {
+    if (c.url.pathname === "/v1/memories") {
+      const cursor = Number(c.url.searchParams.get("cursor"));
+      return [200, { memories: [{ ...MEM, id: cursor + 1 }, { ...MEM, id: cursor + 2 }], counts: { all: 4 }, total: 4, next: cursor === 0 ? 2 : null }];
+    }
+    return [200, { question: "Who signs the Lumen renewal?", answer: "Priya Nair.", message: null, memories: [MEM], clash: false }];
+  });
+  const ids = [];
+  for await (const m of g.memories.iterate({ pageSize: 2 })) ids.push(m.id);
+  assert.deepEqual(ids, [1, 2, 3, 4]);
+  const { answer, memories } = await g.ask("Who signs the Lumen renewal?");
+  assert.equal(answer, "Priya Nair.");
+  assert.equal(memories[0].source.title, "Call with Priya");
+});
+
+test("errors carry the API's own sentence", async () => {
+  const replies = [
+    [401, { error: { code: "bad_key", message: "This key doesn't work. It may have been revoked." } }],
+    [404, { error: { code: "not_found", message: "That memory wasn't found." } }],
+    [422, { error: { code: "unreadable", message: "This PDF is a scan with no text in it.", source: { ...SOURCE, status: "failed" } } }],
+  ];
+  const { g } = make((_, n) => replies[n - 1]);
+  await assert.rejects(g.me(), (e) => e instanceof AuthenticationError && /revoked/.test(e.message));
+  await assert.rejects(g.memories.get(1), NotFoundError);
+  await assert.rejects(g.memories.addFile(new Uint8Array([1]), { filename: "scan.pdf" }),
+    (e) => e instanceof UnreadableError && e.source.status === "failed" && e instanceof GeniffyError);
+});
+
+test("reads are retried, but a failed add is not sent twice", async () => {
+  const { g, calls } = make((c, n) => {
+    if (c.method === "GET" && n === 1) return [503, { error: { code: "memory_unavailable", message: "busy" } }, { "retry-after": "0" }];
+    if (c.method === "POST") return [502, { error: { code: "memory_unavailable", message: "Your memory didn't answer." } }];
+    return [200, { sources: [], total: 0, next: null }];
+  });
+  assert.equal((await g.sources.list()).total, 0);
+  await assert.rejects(g.memories.add("once only"), InternalServerError);
+  assert.deepEqual(calls.map((c) => c.method), ["GET", "GET", "POST"]);
+});
+
+test("a rate-limited add is retried, and waiting ends when learning does", async () => {
+  const { g, calls } = make((c, n) => (n === 1 ? [429, { error: { code: "busy", message: "slow" } }, { "retry-after": "0" }] : [201, { source: SOURCE }]));
+  assert.equal((await g.memories.add("hello")).id, SOURCE.id);
+  assert.equal(calls.length, 2);
+  const stages = ["reading", "learned"];
+  const w = make((_, n) => [200, { source: { ...SOURCE, status: stages[Math.min(n - 1, 1)], facts: 6 } }]);
+  const src = await w.g.sources.wait(SOURCE.id, { intervalMs: 0 });
+  assert.equal(src.status, "learned");
+  assert.equal(src.facts, 6);
+});
+
+// ── spaces: one of YOUR users ─────────────────────────────────────────────────
+test("a bound client carries its space on every call, and a plain one carries none", async () => {
+  // The space rides a header, not an argument, so no method can lose it by forgetting to pass it on.
+  const { g, calls } = make(() => [200, { name: "Omkar", memory: "personal", space: null }]);
+  const mem = g.space("customer_1042");
+
+  assert.equal(g.boundSpace, "");
+  assert.equal(mem.boundSpace, "customer_1042");
+
+  await g.me();
+  await mem.me();
+  await mem.search("renewal");
+  await mem.memories.list();
+
+  assert.equal(calls[0].headers["X-Geniffy-Space"], undefined, "a plain client reaches your own memory");
+  assert.deepEqual(calls.slice(1).map((c) => c.headers["X-Geniffy-Space"]),
+    ["customer_1042", "customer_1042", "customer_1042"], "every call a bound client makes is scoped");
+});
+
+test("two bound clients do not share a space, and binding keeps the key", async () => {
+  const { g, calls } = make(() => [200, { memories: [], counts: {}, total: 0 }]);
+  await g.space("customer_1042").search("x");
+  await g.space("customer_1043").search("x");
+  assert.deepEqual(calls.map((c) => c.headers["X-Geniffy-Space"]), ["customer_1042", "customer_1043"]);
+  assert.deepEqual(calls.map((c) => c.headers.Authorization), [`Bearer ${KEY}`, `Bearer ${KEY}`]);
+});
+
+test("listing your users, and forgetting one", async () => {
+  const rows = [{ space: "customer_1042", sources: 3, memories: 11, last_added_at: "2026-10-04T06:00:00+00:00" }];
+  const { g, calls } = make((c) => (c.method === "DELETE" ? [200, { erased: true }] : [200, { spaces: rows, total: 1 }]));
+  assert.equal((await g.spaces())[0].memories, 11);
+  await g.forgetSpace("customer 1042/../x");
+  assert.equal(calls[1].url.pathname, "/v1/spaces/customer%201042%2F..%2Fx", "the name is escaped, never pasted into the path");
+});
+
+test("a failed call's error carries the id Geniffy gave it", async () => {
+  const { g } = make(() => [404, { error: { code: "not_found", message: "No memory with that id." } },
+    { "x-request-id": "e15cf212-341b-4e36-859e-fed587b87eca" }]);
+  await assert.rejects(g.memories.get(1), (e) => {
+    assert.ok(e instanceof NotFoundError);
+    assert.equal(e.requestId, "e15cf212-341b-4e36-859e-fed587b87eca");
+    return true;
+  });
+});
+
+test("waiting asks Geniffy to hold the call, so one call is enough", async () => {
+  const { g, calls } = make(() => [200, { source: { ...SOURCE, status: "learned", facts: 6 } }]);
+  assert.equal((await g.sources.wait(SOURCE.id)).status, "learned");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url.searchParams.get("wait"), "30.0", "held up to 30 seconds, not asked again every two");
+  await g.sources.wait(SOURCE.id, { timeoutMs: 3_000 });
+  assert.equal(calls[1].url.searchParams.get("wait"), "3.0", "and never past the caller's own deadline");
+});

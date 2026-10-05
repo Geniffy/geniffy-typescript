@@ -1,0 +1,35 @@
+{
+  "name": "geniffy",
+  "version": "0.1.1",
+  "description": "Geniffy for TypeScript and JavaScript: add notes, files and links to a memory, then search it and ask it.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "README.md"],
+  "sideEffects": false,
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test test/client.test.mjs"
+  },
+  "keywords": ["memory", "ai", "agents", "llm", "rag", "geniffy"],
+  "homepage": "https://docs.geniffy.com/sdks/typescript",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Geniffy/geniffy-typescript.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Geniffy/geniffy-typescript/issues"
+  },
+  "author": "Geniffy <ops@geniffy.com>",
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  }
+}
