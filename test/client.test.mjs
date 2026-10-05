@@ -137,6 +137,28 @@ test("two bound clients do not share a space, and binding keeps the key", async 
   assert.deepEqual(calls.map((c) => c.headers.Authorization), [`Bearer ${KEY}`, `Bearer ${KEY}`]);
 });
 
+test("a blank space throws, never reading your own memory", async () => {
+  // A blank space is what a missing user id looks like by the time it reaches space(): read as no space,
+  // that user's words would land in your own memory, with every other user missing an id.
+  const { g, calls } = make(() => [200, {}]);
+  for (const blank of ["", "   ", "	"]) {
+    assert.throws(() => g.space(blank), { name: "TypeError", message: /blank/ });
+    await assert.rejects(g.forgetSpace(blank), { name: "TypeError", message: /blank/ });
+    assert.throws(() => make(() => [200, {}], { space: blank }), { name: "TypeError", message: /blank/ });
+  }
+  for (const wrong of [undefined, null, true, 3.5, NaN, ["customer_1042"], {}]) {
+    assert.throws(() => g.space(wrong), { name: "TypeError", message: /a string or an integer id/ });
+    await assert.rejects(g.forgetSpace(wrong), { name: "TypeError" });
+  }
+  assert.equal(calls.length, 0, "nothing was asked of the API");
+
+  assert.equal(g.space(1042).boundSpace, "1042", "an integer id is the same user as its digits");
+  assert.equal(g.space(" customer_1042 ").boundSpace, "customer_1042");
+  for (const none of [undefined, null]) {
+    assert.equal(make(() => [200, {}], { space: none }).g.boundSpace, "", "no space in the options is your own memory");
+  }
+});
+
 test("listing your users, and forgetting one", async () => {
   const rows = [{ space: "customer_1042", sources: 3, memories: 11, last_added_at: "2026-10-04T06:00:00+00:00" }];
   const { g, calls } = make((c) => (c.method === "DELETE" ? [200, { erased: true }] : [200, { spaces: rows, total: 1 }]));

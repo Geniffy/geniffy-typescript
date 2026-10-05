@@ -4,6 +4,10 @@
 
 - `memories.add({ ..., saidAt })` and the same in `addMany`: when a note or conversation from the past was
   said (a `Date` or an ISO 8601 string), so what it teaches is dated by it. Needs the API with `said_at` (October 2026).
+- `space()`, `forgetSpace()` and the `space` option throw a `TypeError` for a blank space and for anything
+  that isn't a string or an integer. A blank space used to mean your own memory, so a user with a missing id
+  landed in it, and `forgetSpace(undefined)` erased a space named "undefined". Your own memory is still the
+  client with no space. An integer id is taken as its digits.
 
 ## 0.1.1
 

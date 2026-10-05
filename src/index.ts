@@ -99,7 +99,23 @@ export interface ClientOptions {
    * You usually want `client.space(id)` instead: one client for the process, one bound client per
    * request, so a space can never be forgotten on a call.
    */
-  space?: string;
+  space?: string | number;
+}
+
+// One of your users, by your own name for them: a string, or an integer id. A blank one is refused, not
+// read as no space: a client with no space reads YOUR memory, so a user with no id would land in it.
+function spaceName(space: unknown, what: string): string {
+  const named = typeof space === "number" && Number.isSafeInteger(space) ? String(space) : space;
+  if (typeof named !== "string") {
+    throw new TypeError(`${what} takes your name for one of your users, a string or an integer id, not ` +
+      `${named === null ? "null" : typeof named}.`);
+  }
+  const name = named.trim();
+  if (!name) {
+    throw new TypeError(`${what} got a blank space. A client with no space reads your own memory, so a user ` +
+      "with no id would land in it. Pass the user's id, or use the client itself for your own memory.");
+  }
+  return name;
 }
 
 // ── errors ────────────────────────────────────────────────────────────────────
@@ -190,7 +206,7 @@ export class Geniffy {
     this.#fetch = opts.fetch ?? globalThis.fetch.bind(globalThis);
     this.timeout = opts.timeout ?? 60_000;
     this.maxRetries = Math.max(0, opts.maxRetries ?? 2);
-    this.boundSpace = (opts.space ?? "").trim();
+    this.boundSpace = opts.space === undefined || opts.space === null ? "" : spaceName(opts.space, "space:");
     this.memories = new Memories(this);
     this.sources = new Sources(this);
   }
@@ -204,11 +220,12 @@ export class Geniffy {
    *     await mem.memories.add("Prefers WhatsApp.");
    *     const answer = await mem.ask("How should we reach them?");
    *
-   * `space` is your own name for that user and nothing is read into it: an id, an email, whatever
-   * you already call them. Up to 128 letters, digits, dots, dashes or underscores.
+   * `space` is your own name for that user and nothing is read into it: the id you already give them,
+   * up to 128 letters, digits, dots, dashes or underscores, so an id rather than an email. A blank one
+   * (or undefined, or null) throws rather than reading your own memory.
    */
-  space(space: string): Geniffy {
-    return new Geniffy({ ...this.#opts, apiKey: this.#key, space });
+  space(space: string | number): Geniffy {
+    return new Geniffy({ ...this.#opts, apiKey: this.#key, space: spaceName(space, "space()") });
   }
 
   /** @internal */
@@ -326,8 +343,8 @@ User: ${question}`;
    * Everything one of your users ever said, gone: facts, sources, all of it. This is the call to
    * make when they ask to be forgotten. It cannot be undone.
    */
-  async forgetSpace(space: string): Promise<void> {
-    await this.request("DELETE", `/v1/spaces/${encodeURIComponent(space)}`);
+  async forgetSpace(space: string | number): Promise<void> {
+    await this.request("DELETE", `/v1/spaces/${encodeURIComponent(spaceName(space, "forgetSpace()"))}`);
   }
 }
 
