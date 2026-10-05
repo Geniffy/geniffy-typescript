@@ -60,6 +60,9 @@ const key = await client.space(`user_${user.id}`).keys.create({ name: "Asha's ph
 await client.space(`user_${user.id}`).keys.revoke(key.id);
 ```
 
+Group your users' profiles your way with sections: `client.sections.create({ name: "billing", keywords: ["invoice"] })`
+for every user, or on `client.space(id)` for one.
+
 ## Add
 
 ```ts
