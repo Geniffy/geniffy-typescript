@@ -494,7 +494,8 @@ export class Memories {
     return out.source;
   }
 
-  /** Add a PDF or Word (.docx) file. Under an externalId, a new version updates the source that id names. */
+  /** Add a file: PDF, Word (.docx), PowerPoint (.pptx), Excel (.xlsx), or text (.txt, .md, .csv, .html). Under an
+   *  externalId, a new version updates the source that id names. */
   async addFile(file: Blob | ArrayBuffer | Uint8Array,
                 opts: { filename?: string; title?: string } & ExternalId & WithLabels = {}): Promise<Source> {
     const blob = file instanceof Blob ? file : new Blob([file as BlobPart]);
