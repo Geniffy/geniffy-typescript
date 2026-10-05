@@ -20,6 +20,8 @@ export interface SourceRef {
   id: string | null;
   kind: string;
   title: string;
+  /** the labels on that source */
+  labels?: Labels;
 }
 
 export interface Memory {
