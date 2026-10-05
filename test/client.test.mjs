@@ -118,6 +118,10 @@ test("a key limited to one user is made, listed and revoked on that user's clien
   assert.equal(calls[2].url.pathname, "/v1/keys/21");
   await mem.keys.create();
   assert.deepEqual(JSON.parse(calls[3].body), {});
+  await mem.keys.create({ name: "A week", expiresAt: "2026-10-13" });
+  assert.deepEqual(JSON.parse(calls[4].body), { name: "A week", expires_at: "2026-10-13" });
+  await mem.keys.create({ expiresAt: new Date("2026-10-13T18:00:00Z") });
+  assert.equal(JSON.parse(calls[5].body).expires_at, "2026-10-13T18:00:00.000Z");
 });
 
 test("profile sections for every user, or one", async () => {

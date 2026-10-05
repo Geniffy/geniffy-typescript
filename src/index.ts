@@ -531,6 +531,8 @@ export interface Key {
   starts_with?: string | null;
   created_at?: string | null;
   last_used_at?: string | null;
+  /** when it stops working by itself; null: when it is revoked */
+  expires_at?: string | null;
 }
 
 /** Keys limited to one of your users, on a client bound to that user: `client.space(id).keys`. Such a key is
@@ -538,11 +540,15 @@ export interface Key {
 export class Keys {
   constructor(private readonly client: Geniffy) {}
 
-  /** A new key limited to this client's user. `key` is shown once. rpm: requests a minute (up to 600, the default). */
-  create(opts: { name?: string; rpm?: number } = {}): Promise<Key> {
+  /** A new key limited to this client's user. `key` is shown once. rpm: requests a minute (up to 600, the default).
+   *  expiresAt: when it stops working by itself (a Date, or an ISO date it works through); left out, never. */
+  create(opts: { name?: string; rpm?: number; expiresAt?: Date | string } = {}): Promise<Key> {
     const json: Record<string, unknown> = {};
     if (opts.name) json.name = opts.name;
     if (opts.rpm !== undefined) json.rpm = opts.rpm;
+    if (opts.expiresAt !== undefined) {
+      json.expires_at = opts.expiresAt instanceof Date ? opts.expiresAt.toISOString() : String(opts.expiresAt);
+    }
     return this.client.request<Key>("POST", "/v1/keys", { json });
   }
 
