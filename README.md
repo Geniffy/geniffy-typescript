@@ -65,6 +65,15 @@ await mem.memories.addMany([{ text: "..." }, { url: "https://..." }]);
 
 A file or page that can't be read rejects with `UnreadableError`; `error.source` is the row it left, with the reason.
 
+Syncing your own records? Give each its id. Sent again under the same `externalId`, the source is updated
+rather than added twice: only what changed is learned, and what was removed is taken back.
+
+```ts
+await mem.memories.add({ text: ticket.body, title: ticket.subject, externalId: `ticket-${ticket.id}` });
+await mem.sources.get({ externalId: `ticket-${ticket.id}` });
+await mem.sources.delete({ externalId: `ticket-${ticket.id}` });   // when the ticket is deleted in your app
+```
+
 ## Read and correct
 
 ```ts

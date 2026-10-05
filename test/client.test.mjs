@@ -59,6 +59,46 @@ test("something said in the past carries its date", async () => {
   assert.deepEqual(JSON.parse(calls[3].body).items, [{ text: "One.", said_at: "2024-01-02" }, { text: "Two." }]);
 });
 
+test("your own id goes with every add, and finds and deletes the source", async () => {
+  // Sending again under the same externalId updates that source on Geniffy's side; the client's part is to
+  // send the id with a note, a conversation, a link and a file, and to find and delete by it.
+  const held = { ...SOURCE, external_id: "ticket-42" };
+  const { g, calls } = make((c) => {
+    if (c.method === "GET" && c.url.pathname === "/v1/sources") {
+      const found = c.url.searchParams.get("external_id") === "ticket-42" ? [held] : [];
+      return [200, { sources: found, total: found.length, next: null }];
+    }
+    if (c.method === "DELETE") return [200, { id: held.id, external_id: "ticket-42", deleted: true }];
+    return [201, { source: held }];
+  });
+  const src = await g.memories.add({ text: "Customer asked about invoice 7.", title: "Ticket 42", externalId: "ticket-42" });
+  assert.equal(src.external_id, "ticket-42");
+  assert.deepEqual(JSON.parse(calls[0].body), { text: "Customer asked about invoice 7.", title: "Ticket 42", external_id: "ticket-42" });
+  await g.memories.add({ messages: [{ role: "user", content: "I moved to Pune." }], externalId: "chat-7", saidAt: "2025-03-04" });
+  assert.deepEqual(JSON.parse(calls[1].body), { messages: [{ role: "user", content: "I moved to Pune." }], said_at: "2025-03-04", external_id: "chat-7" });
+  await g.memories.add({ url: "https://acme.test/pricing", externalId: "pricing" });
+  assert.equal(JSON.parse(calls[2].body).external_id, "pricing");
+  await g.memories.addMany([{ text: "One.", externalId: "one" }, "Two."]);
+  assert.deepEqual(JSON.parse(calls[3].body).items, [{ text: "One.", external_id: "one" }, { text: "Two." }]);
+  await g.memories.addFile(new TextEncoder().encode("%PDF-1.7"), { filename: "plan.pdf", externalId: "plan-pdf" });
+  assert.equal(calls[4].body.get("external_id"), "plan-pdf");
+
+  assert.equal((await g.sources.get({ externalId: "ticket-42" })).id, SOURCE.id);
+  assert.equal(calls[5].url.pathname, "/v1/sources");
+  assert.equal(calls[5].url.searchParams.get("external_id"), "ticket-42");
+  await assert.rejects(g.sources.get({ externalId: "ticket-43" }), NotFoundError);
+  await g.sources.delete({ externalId: "ticket-42" });
+  assert.equal(calls.at(-1).method, "DELETE");
+  assert.equal(calls.at(-1).url.pathname, "/v1/sources");
+  assert.equal(calls.at(-1).url.searchParams.get("external_id"), "ticket-42");
+  await g.sources.delete(SOURCE.id);
+  assert.equal(calls.at(-1).url.pathname, `/v1/sources/${SOURCE.id}`);
+  for (const wrong of [undefined, null, {}, { externalId: 42 }]) {
+    await assert.rejects(g.sources.get(wrong), { name: "TypeError" });
+    await assert.rejects(g.sources.delete(wrong), { name: "TypeError" });
+  }
+});
+
 test("listing pages through every memory, and asking", async () => {
   const { g } = make((c) => {
     if (c.url.pathname === "/v1/memories") {

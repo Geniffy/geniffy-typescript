@@ -63,6 +63,8 @@ export interface Source {
   size_bytes?: number | null;
   added_by?: string | null;
   added_at?: string | null;
+  /** your own id for it, when you gave one */
+  external_id?: string | null;
 }
 
 export interface SourcePage {
@@ -411,20 +413,38 @@ export interface SaidAt {
   saidAt?: Date | string;
 }
 
+/** Your own id for what you add: a ticket's, a document's, a conversation's. Sent again under the same id,
+ *  the source is updated rather than added twice: only what changed is learned, and what was removed is
+ *  taken back. Find or delete it by the same id with `sources.get({ externalId })` and `sources.delete`. */
+export interface ExternalId {
+  externalId?: string;
+}
+
 export type AddInput =
   | string
-  | ({ text: string; title?: string } & SaidAt)
-  | { url: string; title?: string }
+  | ({ text: string; title?: string } & SaidAt & ExternalId)
+  | ({ url: string; title?: string } & ExternalId)
   /** A conversation as your framework already holds it. System and developer messages are skipped, and
    *  who said what is kept, so the user's words become facts about the user and not about your assistant. */
-  | ({ messages: ChatMessage[]; title?: string } & SaidAt);
+  | ({ messages: ChatMessage[]; title?: string } & SaidAt & ExternalId);
 
-// The body the API takes: saidAt goes as said_at, a Date as its moment in UTC.
+// The body the API takes: saidAt goes as said_at, a Date as its moment in UTC; externalId as external_id.
 function addBody(input: AddInput): Record<string, unknown> {
   const given = typeof input === "string" ? { text: input } : input;
-  const { saidAt, ...rest } = given as typeof given & SaidAt;
-  if (saidAt === undefined) return rest;
-  return { ...rest, said_at: saidAt instanceof Date ? saidAt.toISOString() : String(saidAt) };
+  const { saidAt, externalId, ...rest } = given as typeof given & SaidAt & ExternalId;
+  const body: Record<string, unknown> = { ...rest };
+  if (saidAt !== undefined) body.said_at = saidAt instanceof Date ? saidAt.toISOString() : String(saidAt);
+  if (externalId !== undefined) body.external_id = String(externalId);
+  return body;
+}
+
+/** A source named by Geniffy's id, or by the external id you added it under. */
+export type SourceLookup = string | { externalId: string };
+
+function lookup(ref: SourceLookup): { id?: string; externalId?: string } {
+  if (typeof ref === "string") return { id: ref };
+  if (ref && typeof ref.externalId === "string") return { externalId: ref.externalId };
+  throw new TypeError("Name the source by its id, or as { externalId }.");
 }
 
 export class Memories {
@@ -437,14 +457,16 @@ export class Memories {
     return out.source;
   }
 
-  /** Add a PDF or Word (.docx) file. */
-  async addFile(file: Blob | ArrayBuffer | Uint8Array, opts: { filename?: string; title?: string } = {}): Promise<Source> {
+  /** Add a PDF or Word (.docx) file. Under an externalId, a new version updates the source that id names. */
+  async addFile(file: Blob | ArrayBuffer | Uint8Array,
+                opts: { filename?: string; title?: string } & ExternalId = {}): Promise<Source> {
     const blob = file instanceof Blob ? file : new Blob([file as BlobPart]);
     const named = (file as unknown as { name?: unknown }).name;
     const name = opts.filename ?? (typeof named === "string" && named ? named : "file");
     const form = new FormData();
     form.append("file", blob, name);
     if (opts.title) form.append("title", opts.title);
+    if (opts.externalId !== undefined) form.append("external_id", String(opts.externalId));
     const out = await this.client.request<{ source: Source }>("POST", "/v1/memories/file", { form });
     return out.source;
   }
@@ -499,13 +521,25 @@ export class Sources {
     return this.client.request<SourcePage>("GET", "/v1/sources", { query: { limit: opts.limit ?? 100, cursor: opts.cursor ?? 0 } });
   }
 
-  async get(id: string): Promise<Source> {
-    return (await this.client.request<{ source: Source }>("GET", `/v1/sources/${encodeURIComponent(id)}`)).source;
+  /** A source, by its id or as { externalId } (a NotFoundError when no source has that external id). */
+  async get(ref: SourceLookup): Promise<Source> {
+    const { id, externalId } = lookup(ref);
+    if (id !== undefined) {
+      return (await this.client.request<{ source: Source }>("GET", `/v1/sources/${encodeURIComponent(id)}`)).source;
+    }
+    const { sources } = await this.client.request<SourcePage>("GET", "/v1/sources", { query: { external_id: externalId } });
+    if (!sources.length) {
+      throw new NotFoundError("No source in this space has that external_id.", { status: 404, code: "not_found" });
+    }
+    return sources[0];
   }
 
-  /** Delete a source and every memory learned only from it. */
-  async delete(id: string): Promise<void> {
-    await this.client.request("DELETE", `/v1/sources/${encodeURIComponent(id)}`);
+  /** Delete a source and every memory learned only from it, by its id or as { externalId }: the call for a
+   *  record your app deleted. */
+  async delete(ref: SourceLookup): Promise<void> {
+    const { id, externalId } = lookup(ref);
+    if (id !== undefined) await this.client.request("DELETE", `/v1/sources/${encodeURIComponent(id)}`);
+    else await this.client.request("DELETE", "/v1/sources", { query: { external_id: externalId } });
   }
 
   /** Wait until Geniffy has learned from a source (or could not), then return it. Geniffy holds the
