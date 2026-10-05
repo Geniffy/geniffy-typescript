@@ -188,6 +188,8 @@ type Body = { json?: unknown; form?: FormData; query?: Record<string, string | n
 export class Geniffy {
   readonly memories: Memories;
   readonly sources: Sources;
+  /** Keys limited to one of your users, on a client bound to them: client.space(id).keys */
+  readonly keys: Keys;
   readonly maxRetries: number;
   readonly timeout: number;
   /** The one of your users this client is bound to, or "" for your own memory. */
@@ -211,6 +213,7 @@ export class Geniffy {
     this.boundSpace = opts.space === undefined || opts.space === null ? "" : spaceName(opts.space, "space:");
     this.memories = new Memories(this);
     this.sources = new Sources(this);
+    this.keys = new Keys(this);
   }
 
   /**
@@ -511,6 +514,43 @@ export class Memories {
   /** Forget a memory for good. */
   async delete(id: number): Promise<void> {
     await this.client.request("DELETE", `/v1/memories/${Math.trunc(id)}`);
+  }
+}
+
+/** A key limited to one of your users: it reads and writes their memory and nothing else. */
+export interface Key {
+  id: number;
+  name: string;
+  /** the user it is limited to */
+  space: string;
+  /** the key itself: only when it is made, never again */
+  key?: string | null;
+  starts_with?: string | null;
+  created_at?: string | null;
+  last_used_at?: string | null;
+}
+
+/** Keys limited to one of your users, on a client bound to that user: `client.space(id).keys`. Such a key is
+ *  safe to hand to that user's own app or device, since it reaches their memory and nothing else. */
+export class Keys {
+  constructor(private readonly client: Geniffy) {}
+
+  /** A new key limited to this client's user. `key` is shown once. rpm: requests a minute (up to 600, the default). */
+  create(opts: { name?: string; rpm?: number } = {}): Promise<Key> {
+    const json: Record<string, unknown> = {};
+    if (opts.name) json.name = opts.name;
+    if (opts.rpm !== undefined) json.rpm = opts.rpm;
+    return this.client.request<Key>("POST", "/v1/keys", { json });
+  }
+
+  /** The keys limited to this client's user that still work. */
+  async list(): Promise<Key[]> {
+    return (await this.client.request<{ keys: Key[] }>("GET", "/v1/keys")).keys;
+  }
+
+  /** One of this user's keys stops at once. */
+  async revoke(id: number): Promise<void> {
+    await this.client.request("DELETE", `/v1/keys/${Math.trunc(id)}`);
   }
 }
 

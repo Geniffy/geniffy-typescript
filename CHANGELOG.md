@@ -8,6 +8,9 @@
   same id, the source is updated rather than added twice, and only what changed is learned.
   `sources.get({ externalId })` and `sources.delete({ externalId })` find and delete it by that id, and
   `Source.external_id` says which id a source was added under.
+- `keys` on a client bound to one of your users: `client.space(id).keys.create({ name, rpm })` makes a key
+  limited to that user (it reads and writes their memory and nothing else), and `keys.list()` and
+  `keys.revoke(id)` manage them. Needs the API with `/v1/keys` (October 2026).
 - `space()`, `forgetSpace()` and the `space` option throw a `TypeError` for a blank space and for anything
   that isn't a string or an integer. A blank space used to mean your own memory, so a user with a missing id
   landed in it, and `forgetSpace(undefined)` erased a space named "undefined". Your own memory is still the

@@ -99,6 +99,27 @@ test("your own id goes with every add, and finds and deletes the source", async 
   }
 });
 
+test("a key limited to one user is made, listed and revoked on that user's client", async () => {
+  const made = { id: 21, name: "Asha's phone", space: "customer_42", key: "gnf_live_" + "l".repeat(43) };
+  const { g, calls } = make((c) => {
+    if (c.method === "POST") return [201, made];
+    if (c.method === "GET") return [200, { keys: [{ ...made, key: null, starts_with: "gnf_live_ll" }] }];
+    return [200, { id: 21, space: "customer_42", revoked: true }];
+  });
+  const mem = g.space("customer_42");
+  const key = await mem.keys.create({ name: "Asha's phone", rpm: 60 });
+  assert.equal(key.key, made.key);
+  assert.equal(calls[0].url.pathname, "/v1/keys");
+  assert.equal(calls[0].headers["X-Geniffy-Space"], "customer_42");
+  assert.deepEqual(JSON.parse(calls[0].body), { name: "Asha's phone", rpm: 60 });
+  assert.deepEqual((await mem.keys.list()).map((k) => [k.id, k.key]), [[21, null]]);
+  await mem.keys.revoke(21);
+  assert.equal(calls[2].method, "DELETE");
+  assert.equal(calls[2].url.pathname, "/v1/keys/21");
+  await mem.keys.create();
+  assert.deepEqual(JSON.parse(calls[3].body), {});
+});
+
 test("listing pages through every memory, and asking", async () => {
   const { g } = make((c) => {
     if (c.url.pathname === "/v1/memories") {

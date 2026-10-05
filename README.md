@@ -53,6 +53,13 @@ await client.spaces();                                // which spaces hold anyth
 await client.forgetSpace("user_8841");                // everything held for that user, gone, when they ask
 ```
 
+To let a user's own app or device reach their memory, and nothing else, give it a key limited to them:
+
+```ts
+const key = await client.space(`user_${user.id}`).keys.create({ name: "Asha's phone" });   // key.key is shown once
+await client.space(`user_${user.id}`).keys.revoke(key.id);
+```
+
 ## Add
 
 ```ts
