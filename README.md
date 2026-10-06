@@ -50,6 +50,7 @@ A space exists from the first time you write to it; there is nothing to create.
 const mem = client.space(`user_${user.id}`);          // per request
 await client.memories.add("...");                     // no space: your own memory, the one the Geniffy app shows
 await client.spaces();                                // which spaces hold anything, most recently written first
+await client.space("user_8841").export();             // everything held for that user, as their own copy
 await client.forgetSpace("user_8841");                // everything held for that user, gone, when they ask
 ```
 
@@ -69,6 +70,7 @@ for every user, or on `client.space(id)` for one.
 await mem.memories.add({ text: "Pilots run for 6 weeks.", title: "GTM plan" });
 await mem.memories.add({ url: "https://example.com" });        // a web page, read once
 await mem.memories.add({ messages: chatHistory });                  // a conversation, as your framework holds it
+await mem.memories.add({ text: "We moved the launch to March.", saidAt: "2026-09-12" }); // dated by when it was said
 await mem.memories.addFile(fileOrBlob, { filename: "Pricing.pdf" }); // PDF, .docx, .pptx, .xlsx or text
 await mem.memories.addMany([{ text: "..." }, { url: "https://..." }]);
 ```
@@ -92,7 +94,12 @@ await mem.memories.add({ text: email.body, title: email.subject, labels: { chann
 await mem.context("When does the renewal come up?", { labels: { account: "lumen" } });
 await mem.search("pricing", { labels: { channel: ["email", "chat"] } });
 await mem.memories.list({ labels: { account: "lumen" } });
+await mem.sources.deleteLabelled({ channel: "email" });                   // the user disconnected it: all it brought goes
+await mem.sources.deleteLabelled({ channel: "email" }, { keep: seen });   // the end of a full sync: all but what is still there
 ```
+
+To keep a whole data source in step, such as a user's Gmail, Drive or Notion, see
+[Sync a data source](https://docs.geniffy.com/add-memories/sync-a-data-source).
 
 ## Read and correct
 
