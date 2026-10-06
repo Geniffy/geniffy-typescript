@@ -7,11 +7,11 @@
  *   const { answer } = await g.ask("Who signs the Lumen renewal?");
  *
  * No dependencies: the platform's fetch, FormData and Blob (Node 18+, Deno, Bun, edge runtimes).
- * Retries: reads and deletes are retried on network errors, 408, 429 and 5xx; adding is retried only on
- * 429, so a retry never saves a note twice.
+ * Retries: reads, deletes and files.put (the same text twice is the same file) are retried on network errors,
+ * 408, 429 and 5xx; adding is retried only on 429, so a retry never saves a note twice.
  */
 
-export const VERSION = "0.2.0";
+export const VERSION = "0.3.0";
 export const DEFAULT_BASE_URL = "https://api.geniffy.com";
 
 export type Kind = "all" | "people" | "plan" | "pref" | "detail";
@@ -209,6 +209,8 @@ type Body = { json?: unknown; form?: FormData; query?: Record<string, string | n
 export class Geniffy {
   readonly memories: Memories;
   readonly sources: Sources;
+  /** Files kept with their exact text, such as the ones Claude's memory tool writes (see `geniffy/claude`) */
+  readonly files: Files;
   /** Keys limited to one of your users, on a client bound to them: client.space(id).keys */
   readonly keys: Keys;
   /** The sections profiles are grouped into: every user's on the plain client, one user's on client.space(id) */
@@ -239,6 +241,7 @@ export class Geniffy {
     }
     this.memories = new Memories(this);
     this.sources = new Sources(this);
+    this.files = new Files(this);
     this.keys = new Keys(this);
     this.sections = new Sections(this);
   }
@@ -261,7 +264,7 @@ export class Geniffy {
   }
 
   /** @internal */
-  async request<T>(method: "GET" | "POST" | "DELETE" | "PATCH", path: string, body: Body = {}): Promise<T> {
+  async request<T>(method: "GET" | "POST" | "PUT" | "DELETE" | "PATCH", path: string, body: Body = {}): Promise<T> {
     const url = new URL(this.#base + path);
     for (const [k, v] of Object.entries(body.query ?? {})) {
       if (Array.isArray(v)) for (const each of v) url.searchParams.append(k, each);
@@ -371,7 +374,8 @@ User: ${question}`;
   }
 
   /** Everything held, as the user's own copy: every memory, current or not, with its status and the sentence it
-   *  came from, and every source. On client.space(id), for a user who asks what you hold about them. */
+   *  came from, every source, and every file by its path (files.get(path) reads each one's text). On
+   *  client.space(id), for a user who asks what you hold about them. */
   export(): Promise<Export> {
     return this.request<Export>("GET", "/v1/export");
   }
@@ -434,6 +438,9 @@ export interface Export {
   stored_in: string;
   memories: (Memory & { quote?: string | null })[];
   sources: Source[];
+  /** every file kept, by path and without its text, which files.get(path) returns exactly as written (left out by
+   *  an API from before files) */
+  files?: FileEntry[];
 }
 
 export interface Graph {
@@ -470,7 +477,8 @@ export interface SaidAt {
 
 /** Your own id for what you add: a ticket's, a document's, a conversation's. Sent again under the same id,
  *  the source is updated rather than added twice: only what changed is learned, and what was removed is
- *  taken back. Find or delete it by the same id with `sources.get({ externalId })` and `sources.delete`. */
+ *  taken back. Find or delete it by the same id with `sources.get({ externalId })` and `sources.delete`.
+ *  An id that starts with "file:" is refused: those name the files kept with `files.put`. */
 export interface ExternalId {
   externalId?: string;
 }
@@ -655,9 +663,9 @@ export class Sections {
   }
 }
 
-// Each call deletes up to 100 sources and says whether more carry the labels; this many calls is the most one
-// deleteLabelled() makes, so a filter that somehow keeps matching cannot loop for ever.
-const LABELLED_CALLS = 1000;
+// Each call deletes up to 100 sources (or files) and says whether more are left; this many calls is the most one
+// deleteLabelled() or files.deletePrefix() makes, so a filter that somehow keeps matching cannot loop for ever.
+const DELETE_CALLS = 1000;
 
 export class Sources {
   constructor(private readonly client: Geniffy) {}
@@ -680,7 +688,7 @@ export class Sources {
     }
     if (opts.keep !== undefined) return this.deleteAllBut(labels, opts.keep);
     let total = 0;
-    for (let i = 0; i < LABELLED_CALLS; i++) {
+    for (let i = 0; i < DELETE_CALLS; i++) {
       const out = await this.client.request<{ sources_deleted: number; more: boolean }>("DELETE", "/v1/sources", {
         query: { label: labelQuery(labels) },
       });
@@ -747,6 +755,91 @@ export class Sources {
       if (source.status !== "reading" || now >= deadline) return source;
       if (now - asked < 1_000) await sleep(Math.min(opts.intervalMs ?? 2000, deadline - now));   // answered at once: don't spin
     }
+  }
+}
+
+/** A file kept in a memory, without its text. */
+export interface FileEntry {
+  /** such as /memories/notes.md */
+  path: string;
+  /** how long its text is, in characters */
+  size: number;
+  updated_at: string;
+}
+
+/** A file and its text, exactly as it was put. */
+export interface MemoryFile extends FileEntry {
+  text: string;
+}
+
+/** What files.put did. */
+export interface FileInfo extends FileEntry {
+  /** true when no file had that path before */
+  created: boolean;
+  /** the source it is learned from, titled by its path */
+  source: SourceRef;
+}
+
+export interface FilePage {
+  files: FileEntry[];
+  total: number;
+  next: number | null;
+}
+
+/**
+ * Files kept exactly as they were written, each under a path such as /memories/notes.md: what an agent keeps for
+ * itself, like the notes Claude's memory tool writes (see `geniffy/claude`). Geniffy also learns from each file like
+ * a note titled by its path, so context() and ask() recall what it says, and deleting it takes back what only it
+ * taught.
+ *
+ * A path starts with "/" and has at most 255 characters, with no empty, "." or ".." parts and no backslash.
+ */
+export class Files {
+  constructor(private readonly client: Geniffy) {}
+
+  /** Create a file, or replace its text. The text is kept exactly as sent, whitespace and line endings included,
+   *  and learned like a note; a replace learns only what changed. An empty file is kept too, with nothing learned
+   *  from it. labels: as on memories.add. */
+  put(path: string, text: string, opts: WithLabels = {}): Promise<FileInfo> {
+    return this.client.request<FileInfo>("PUT", "/v1/files", { json: { path, text, labels: opts.labels } });
+  }
+
+  /** A file and its exact text (a NotFoundError when no file has that path). */
+  get(path: string): Promise<MemoryFile> {
+    return this.client.request<MemoryFile>("GET", "/v1/files", { query: { path } });
+  }
+
+  /** The files whose paths start with `prefix`, by path, without their text ("/", the default, for all of them).
+   *  Up to 200 a page; `next` is the cursor of the page after, null at the end. */
+  list(opts: { prefix?: string; limit?: number; cursor?: number } = {}): Promise<FilePage> {
+    return this.client.request<FilePage>("GET", "/v1/files", {
+      query: { prefix: opts.prefix ?? "/", limit: opts.limit ?? 100, cursor: opts.cursor ?? 0 },
+    });
+  }
+
+  /** Delete a file, its text and what only it taught (a NotFoundError when no file has that path). */
+  async delete(path: string): Promise<void> {
+    await this.client.request("DELETE", "/v1/files", { query: { path } });
+  }
+
+  /** Delete every file whose path starts with `prefix` ("/memories/" for everything in that folder), with what
+   *  only they taught. Resolves to how many. */
+  async deletePrefix(prefix: string): Promise<number> {
+    let total = 0;
+    for (let i = 0; i < DELETE_CALLS; i++) {
+      const out = await this.client.request<{ deleted: number; more: boolean }>("DELETE", "/v1/files", { query: { prefix } });
+      total += out.deleted ?? 0;
+      if (!out.more) break;
+    }
+    return total;
+  }
+
+  /** Move a file, or, when `from` is a folder, every file in it, keeping the text and what was learned. A
+   *  NotFoundError when there is nothing to move; a BadRequestError with code "conflict" when a destination is
+   *  already taken, and then nothing moves. Resolves to how many files moved. */
+  async move(from: string, to: string): Promise<number> {
+    const out = await this.client.request<{ moved: number }>("POST", "/v1/files/move", { json: { from, to } });
+    return out.moved ?? 0;
   }
 }
 

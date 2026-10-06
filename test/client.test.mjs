@@ -1,7 +1,7 @@
 // The built client against a fake fetch: requests, results, errors and retries.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Geniffy, AuthenticationError, NotFoundError, UnreadableError, InternalServerError, GeniffyError } from "../dist/index.js";
+import { Geniffy, AuthenticationError, BadRequestError, NotFoundError, UnreadableError, InternalServerError, GeniffyError } from "../dist/index.js";
 
 const KEY = "gnf_live_" + "k".repeat(43);
 const SOURCE = { id: "a".repeat(32), kind: "note", title: "Priya Nair signs the Lumen renewal.", status: "reading" };
@@ -193,6 +193,79 @@ test("your own id goes with every add, and finds and deletes the source", async 
     await assert.rejects(g.sources.get(wrong), { name: "TypeError" });
     await assert.rejects(g.sources.delete(wrong), { name: "TypeError" });
   }
+});
+
+test("a file is put with its exact text, read back, listed, moved and deleted", async () => {
+  const text = "  Priya prefers WhatsApp.\r\n\n\tAsk before calling.  \n";
+  const info = { path: "/memories/notes.md", size: text.length, updated_at: "2026-10-06T00:00:00+00:00", created: true,
+    source: { id: SOURCE.id, kind: "note", title: "/memories/notes.md" } };
+  let left = 103;
+  const { g, calls } = make((c) => {
+    const q = c.url.searchParams;
+    if (c.method === "PUT") return [200, info];
+    if (c.method === "POST") return [200, { moved: 2 }];
+    if (c.method === "DELETE" && q.has("prefix")) {
+      const took = Math.min(100, left);
+      left -= took;
+      return [200, { deleted: took, more: left > 0 }];
+    }
+    if (c.method === "DELETE") return [200, { deleted: 1, path: q.get("path") }];
+    if (q.has("path")) return [200, { path: q.get("path"), text, size: text.length, updated_at: info.updated_at }];
+    return [200, { files: [{ path: info.path, size: info.size, updated_at: info.updated_at }], total: 1, next: null }];
+  });
+  const mem = g.space("customer_42");
+  const put = await mem.files.put("/memories/notes.md", text, { labels: { channel: "claude-memory" } });
+  assert.equal(put.created, true);
+  assert.equal(put.source.title, "/memories/notes.md");
+  assert.equal(calls[0].method, "PUT");
+  assert.equal(calls[0].url.pathname, "/v1/files");
+  assert.equal(calls[0].headers["X-Geniffy-Space"], "customer_42");
+  assert.equal(calls[0].headers["Content-Type"], "application/json");
+  assert.deepEqual(JSON.parse(calls[0].body), { path: "/memories/notes.md", text, labels: { channel: "claude-memory" } });
+  await mem.files.put("/memories/empty.md", "");
+  assert.deepEqual(JSON.parse(calls[1].body), { path: "/memories/empty.md", text: "" }, "an empty file is sent, and no labels");
+
+  const file = await mem.files.get("/memories/notes.md");
+  assert.equal(file.text, text, "the text comes back exactly");
+  assert.equal(calls[2].method, "GET");
+  assert.deepEqual([...calls[2].url.searchParams], [["path", "/memories/notes.md"]]);
+
+  assert.equal((await mem.files.list()).files[0].path, "/memories/notes.md");
+  assert.deepEqual([...calls[3].url.searchParams], [["prefix", "/"], ["limit", "100"], ["cursor", "0"]]);
+  await mem.files.list({ prefix: "/memories/", limit: 200, cursor: 200 });
+  assert.deepEqual([...calls[4].url.searchParams], [["prefix", "/memories/"], ["limit", "200"], ["cursor", "200"]]);
+
+  assert.equal(await mem.files.move("/memories/old", "/memories/new"), 2);
+  assert.equal(calls[5].url.pathname, "/v1/files/move");
+  assert.deepEqual(JSON.parse(calls[5].body), { from: "/memories/old", to: "/memories/new" });
+
+  await mem.files.delete("/memories/notes.md");
+  assert.equal(calls[6].method, "DELETE");
+  assert.deepEqual([...calls[6].url.searchParams], [["path", "/memories/notes.md"]]);
+  assert.equal(await mem.files.deletePrefix("/memories/"), 103, "every page of a folder");
+  assert.deepEqual(calls.slice(7).map((c) => [c.method, c.url.searchParams.get("prefix")]),
+    [["DELETE", "/memories/"], ["DELETE", "/memories/"]]);
+  assert.ok(calls.every((c) => c.headers["X-Geniffy-Space"] === "customer_42"));
+});
+
+test("a missing file is a NotFoundError, a taken destination a conflict", async () => {
+  const { g } = make((c) => c.method === "POST"
+    ? [409, { error: { code: "conflict", message: "A file already has the path /memories/b.md." } }]
+    : [404, { error: { code: "not_found", message: "No file has that path." } }]);
+  await assert.rejects(g.files.get("/memories/a.md"), NotFoundError);
+  await assert.rejects(g.files.delete("/memories/a.md"), NotFoundError);
+  await assert.rejects(g.files.move("/memories/a.md", "/memories/b.md"), (e) => e instanceof BadRequestError && e.code === "conflict");
+});
+
+test("putting a file is retried like a read, and a move is not sent twice", async () => {
+  const { g, calls } = make((c, n) => {
+    if (c.method === "PUT") return n === 1 ? [503, { error: { code: "memory_unavailable", message: "busy" } }, { "retry-after": "0" }]
+      : [200, { path: "/a.md", size: 1, updated_at: "2026-10-06T00:00:00+00:00", created: false, source: SOURCE }];
+    return [502, { error: { code: "memory_unavailable", message: "Your memory didn't answer." } }];
+  });
+  assert.equal((await g.files.put("/a.md", "x")).created, false);
+  await assert.rejects(g.files.move("/a.md", "/b.md"), InternalServerError);
+  assert.deepEqual(calls.map((c) => c.method), ["PUT", "PUT", "POST"]);
 });
 
 test("a key limited to one user is made, listed and revoked on that user's client", async () => {

@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.3.0
+
+- `files`: files kept exactly as they were written, each under a path such as `/memories/notes.md`.
+  `files.put(path, text, { labels })` creates or replaces one (an empty file too), `get(path)` returns its exact
+  text, `list({ prefix, limit, cursor })` lists them by path, `delete(path)` and `deletePrefix(prefix)` delete
+  them, and `move(from, to)` moves a file, or a folder and everything in it. Geniffy also learns from each file
+  like a note titled by its path, so `context()` and `ask()` recall what it says: a replace learns only what
+  changed, a move learns nothing again, and deleting a file takes back what only it taught. Putting a file is
+  retried like a read, since the same text twice is the same file. `export()` lists every file by path
+  (`Export.files`), without its text: `files.get(path)` reads each one. Needs the API with `/v1/files` (October 2026).
+- `geniffy/claude`: Claude's memory tool (memory_20250818) with Geniffy as its storage.
+  `betaMemoryTool(geniffyMemoryHandlers(client.space(userId)))` from `@anthropic-ai/sdk/helpers/beta/memory` keeps
+  the files Claude writes under `/memories` in that user's memory, returns each one exactly as Claude wrote it, and
+  lets `context()` and `ask()` recall what it says. Every command answers with the sentences Anthropic's memory tool
+  documentation gives, the same as `geniffy.claude` in Python; a path outside `/memories` is refused however it is
+  encoded, and a command that cannot be done throws the SDK's `ToolError`, so the tool runner sends it back to Claude
+  as an error result. Every file carries the labels `LABELS` (`{ channel: "claude-memory" }`), and
+  `clearAllMemory(mem)` deletes everything under `/memories`. The handlers run one command at a time, in the order
+  they are called: the tool runner runs a reply's tool calls at once, and two edits to one file side by side would
+  each read the old text, losing one edit while both said done. Needs `@anthropic-ai/sdk` 0.72 or later, an
+  optional peer dependency: `geniffy` itself still has no dependencies.
+
 ## 0.2.0
 
 - `memories.add({ ..., saidAt })` and the same in `addMany`: when a note or conversation from the past was

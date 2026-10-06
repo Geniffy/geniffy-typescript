@@ -114,13 +114,51 @@ await mem.sources.list();
 await mem.sources.delete(source.id);                     // a source, and what only it taught
 ```
 
+## Files, and Claude's memory tool
+
+Keep files by path with their text exactly as written, whitespace and line endings included. Geniffy also learns
+from each one like a note titled by its path, so `context()` and `ask()` recall what it says: a replace learns only
+what changed, and deleting a file takes back what only it taught.
+
+```ts
+await mem.files.put("/notes/plan.md", "# Plan\n- Pilots run for 6 weeks.\n");  // creates or replaces it
+const { text } = await mem.files.get("/notes/plan.md");                        // exactly as it was put
+await mem.files.list({ prefix: "/notes/" });                                    // by path, without the text
+await mem.files.move("/notes", "/archive/notes");                               // a file, or a folder and all in it
+await mem.files.delete("/archive/notes/plan.md");
+await mem.files.deletePrefix("/archive/");                                      // everything in that folder
+```
+
+That makes Geniffy the storage for Claude's memory tool, which keeps Claude's own notes as files under `/memories`.
+With `geniffy/claude` those files live in that user's memory: each comes back to Claude exactly as it wrote it, and
+what Claude wrote is recalled by `context()` and `ask()` like anything else the user told you.
+
+```ts
+import Anthropic from "@anthropic-ai/sdk";
+import { betaMemoryTool } from "@anthropic-ai/sdk/helpers/beta/memory";
+import { geniffyMemoryHandlers } from "geniffy/claude";
+
+const message = await new Anthropic().beta.messages.toolRunner({
+  model: "claude-opus-5-5",
+  max_tokens: 16000,
+  tools: [betaMemoryTool(geniffyMemoryHandlers(client.space(`user_${user.id}`)))],
+  messages: [{ role: "user", content: "Remember that I prefer email follow-ups." }],
+});
+```
+
+Every command answers with the sentences Anthropic's memory tool documentation gives, a path outside `/memories` is
+refused, and every file carries the labels `{ channel: "claude-memory" }`: `{ labels: LABELS }` keeps a read to what
+Claude wrote, and `clearAllMemory(mem)` deletes it all (both from `geniffy/claude`). The tool runner runs the tool
+calls of one reply at the same time, so the handlers take them one after another: two edits to one file both land.
+`geniffy/claude` needs `@anthropic-ai/sdk` 0.72 or later, an optional peer dependency; `geniffy` itself still has none.
+
 ## Errors, retries and request ids
 
 Every error carries the API's own sentence: `AuthenticationError` (a wrong or revoked key),
 `NotFoundError`, `BadRequestError`, `UnreadableError`, `RateLimitError`, `InternalServerError`,
-`APIConnectionError`; all extend `GeniffyError`. Reads are retried twice on network errors, 408, 429 and
-5xx; adding is retried only on 429, so a retry never saves a note twice. Pass `{ maxRetries, timeout }`
-to the constructor to change that.
+`APIConnectionError`; all extend `GeniffyError`. Reads, and putting a file (the same text twice is the same
+file), are retried twice on network errors, 408, 429 and 5xx; adding is retried only on 429, so a retry never
+saves a note twice. Pass `{ maxRetries, timeout }` to the constructor to change that.
 
 Every response carries an `X-Request-ID`, and every error carries it as `error.requestId`. Paste it into
 **Requests** in the Geniffy app to see that exact call: what was asked, what came back, and how long it took.
