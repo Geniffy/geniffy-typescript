@@ -11,7 +11,7 @@
  * 408, 429 and 5xx; adding is retried only on 429, so a retry never saves a note twice.
  */
 
-export const VERSION = "0.3.0";
+export const VERSION = "0.4.0";
 export const DEFAULT_BASE_URL = "https://api.geniffy.com";
 
 export type Kind = "all" | "people" | "plan" | "pref" | "detail";
@@ -51,11 +51,39 @@ export interface MemoryDetail {
   history: Memory[];
 }
 
+/** This month's use, for the whole account, against the plan (usage()). Saving, briefings and search are free and
+ *  never counted. */
+export interface Usage {
+  /** free, pro or max: the same plans for everyone, the API in every one */
+  plan: string;
+  /** on the 14 days of Pro every account gets once */
+  trial: boolean;
+  period_start: string;
+  /** when it resets */
+  period_end: string;
+  /** tokens learned this month from everything saved, every way in, your app's users included */
+  learned_tokens: number;
+  /** the tokens the plan learns in a month */
+  included_tokens: number;
+  /** saved and searchable, waiting to be learned next month (or at once with extra learning on) */
+  waiting_tokens: number;
+  /** written answers and context blocks */
+  answers: number;
+  included_answers: number;
+  /** extra learning: past the plan, learned and answered at once, $15 per million tokens, $15 per 1,000 answers */
+  extra_on: boolean;
+  extra_cap_usd: number;
+  extra_used_usd: number;
+  /** learning against the plan: near at 80%; over: new saves wait; extra: extra learning carries on */
+  state: "ok" | "near" | "over" | "extra" | "paused";
+}
+
 export interface Source {
   id: string;
   kind: "note" | "file" | "link";
   title: string;
-  status: "reading" | "learned" | "failed";
+  /** waiting: saved past this month's use, kept, and learned once there is room */
+  status: "reading" | "learned" | "failed" | "waiting";
   /** why it failed, in plain words */
   error?: string | null;
   facts?: number | null;
@@ -173,6 +201,12 @@ export class UnreadableError extends BadRequestError {
   }
 }
 export class RateLimitError extends GeniffyError {}
+/**
+ * This month's use is up (402, code allowance_used): past the plan, what waits to be learned has reached its fair-use
+ * limit (ten months of the plan's learning). Search and recall keep working; saving resumes when the month resets
+ * (usage() says when), at once with extra learning on, or on a bigger plan. Not retried.
+ */
+export class UsageLimitError extends GeniffyError {}
 export class InternalServerError extends GeniffyError {}
 
 function errorFrom(status: number, body: Record<string, unknown>, requestId?: string): GeniffyError {
@@ -183,6 +217,7 @@ function errorFrom(status: number, body: Record<string, unknown>, requestId?: st
   if (status === 404) return new NotFoundError(message, opts);
   if (status === 422 && err.code === "unreadable") return new UnreadableError(message, opts);
   if ([400, 409, 413, 422].includes(status)) return new BadRequestError(message, opts);
+  if (status === 402) return new UsageLimitError(message, opts);
   if (status === 429) return new RateLimitError(message, opts);
   if (status >= 500) return new InternalServerError(message, opts);
   return new GeniffyError(message, opts);
@@ -368,6 +403,65 @@ User: ${question}`;
     return this.request<Brief>("GET", "/v1/brief", { query: { subject, limit: opts.limit, label: labelQuery(opts.labels) } });
   }
 
+  // ── what a session opens with: where things stand, what happened, what was learned and promised
+
+  /**
+   * What this moment needs, written out for YOUR prompt within `budgetChars`: where the project stands (goal,
+   * focus, open items, decisions, next steps), what is due or was promised, the rules and lessons that apply,
+   * what happened (the latest and the most related to `cue` first), then the memories, each dated. Open a session
+   * with it, and call it again when the task changes:
+   *
+   *     const system = `${await mem.briefing({ project: "checkout", cue: userMessage })}\n\n${instructions}`;
+   *
+   * `project` is the label your sources carry (a project, context, thread or repo label); leave it out for every
+   * project. Read, not written by a model, so it is fast enough for every turn.
+   */
+  async briefing(opts: { project?: string; cue?: string; budgetChars?: number } = {}): Promise<string> {
+    return (await this.briefingFull(opts)).briefing;
+  }
+
+  /** The same, with its parts: now, due, lessons, episodes and memories, each with its source. */
+  briefingFull(opts: { project?: string; cue?: string; budgetChars?: number } = {}): Promise<Briefing> {
+    return this.request<Briefing>("POST", "/v1/briefing", {
+      json: { project: opts.project, cue: opts.cue ?? "", budget_chars: opts.budgetChars ?? 6000 },
+    });
+  }
+
+  /** Where things stand, per project: goal, focus, what is open (and since when), decisions with their reasons,
+   *  next steps, blockers and what was finished. */
+  async now(project?: string): Promise<State[]> {
+    return (await this.request<{ now: State[] }>("GET", "/v1/now", { query: { project } })).now;
+  }
+
+  /** What happened, as stories, newest first: what happened, how it ended, what it led to, its source. */
+  async episodes(opts: { project?: string; limit?: number } = {}): Promise<Episode[]> {
+    return (await this.request<{ episodes: Episode[] }>("GET", "/v1/episodes",
+      { query: { project: opts.project, limit: opts.limit ?? 20 } })).episodes;
+  }
+
+  /** Rules, how-tos and lessons, strongest first, each with when it applies and why. */
+  async lessons(opts: { project?: string; limit?: number } = {}): Promise<Lesson[]> {
+    return (await this.request<{ lessons: Lesson[] }>("GET", "/v1/lessons",
+      { query: { project: opts.project, limit: opts.limit ?? 50 } })).lessons;
+  }
+
+  /** Promises and plans, yours and those made to you, with their triggers: open (the default), done or dropped. */
+  async intentions(opts: { status?: "open" | "done" | "dropped"; limit?: number } = {}): Promise<Intention[]> {
+    return (await this.request<{ intentions: Intention[] }>("GET", "/v1/intentions",
+      { query: { status: opts.status ?? "open", limit: opts.limit ?? 50 } })).intentions;
+  }
+
+  /** How well the memory answers about its own work: each night it writes questions from what it read, answers them
+   *  and marks the answers. `health` is the share right (0 to 1), with the questions; null before its first night. */
+  memoryHealth(): Promise<MemoryHealth> {
+    return this.request<MemoryHealth>("GET", "/v1/memory-health");
+  }
+
+  /** Mark a promise or plan done, dropped, or open again. */
+  async setIntention(id: number, status: "done" | "dropped" | "open" = "done"): Promise<Intention> {
+    return (await this.request<{ intention: Intention }>("POST", `/v1/intentions/${Number(id)}`, { json: { status } })).intention;
+  }
+
   /** What the memory holds and what connects to what. Every line has a memory behind it. */
   graph(): Promise<Graph> {
     return this.request<Graph>("GET", "/v1/graph");
@@ -383,6 +477,26 @@ User: ${question}`;
   /** Whose key this is, and which space this client is reading. */
   me(): Promise<{ name: string | null; memory: string; space: string | null }> {
     return this.request("GET", "/v1/me");
+  }
+
+  /**
+   * This month's use for the whole account: what it comes to in dollars ($4 per million tokens learned, $6 per
+   * 1,000 answers), what the plan includes, the most the month can come to, and when it resets. Search and recall
+   * are free and not counted.
+   */
+  usage(): Promise<Usage> {
+    return this.request<Usage>("GET", "/v1/usage");
+  }
+
+  /**
+   * An agent's or a chat's session, saved as it goes into one memory: hand save() the whole conversation after each
+   * turn, and only the messages it has not sent yet go to Geniffy.
+   *
+   *   const run = mem.session("run-42", { title: "Refund agent" });
+   *   await run.save(messages);   // after every turn
+   */
+  session(id: string, opts: { title?: string } & WithLabels = {}): Session {
+    return new Session(this, id, opts);
   }
 
   /** Which of your users have memory, busiest first. */
@@ -443,6 +557,86 @@ export interface Export {
   files?: FileEntry[];
 }
 
+/** Where one project stands. */
+export interface State {
+  project: string | null;
+  goal: string | null;
+  focus: string | null;
+  open: Array<{ text: string; since: string | null }>;
+  decisions: Array<{ what: string; why: string | null; when: string | null }>;
+  next_steps: string[];
+  blockers: string[];
+  done: Array<{ text: string; when: string | null }>;
+  updated_at: string | null;
+}
+
+/** Something that happened, as a story. */
+export interface Episode {
+  id: number;
+  project: string | null;
+  title: string | null;
+  what_happened: string | null;
+  /** how it ended */
+  outcome: string | null;
+  led_to: string | null;
+  people: string[];
+  decisions: Array<{ what: string; why: string | null }>;
+  /** endings a later conversation corrected, oldest first: what it first seemed, and what showed otherwise */
+  revised?: Array<{ was: string | null; why: string | null; at: string | null }>;
+  started_at: string | null;
+  ended_at: string | null;
+  source: SourceRef;
+}
+
+/** A rule, how-to or lesson, with when it applies and why. */
+export interface Lesson {
+  id: number;
+  project: string | null;
+  kind: "rule" | "how_to" | "lesson" | null;
+  statement: string | null;
+  applies_when: string | null;
+  why: string | null;
+  /** how many times it was learned again */
+  strength: number;
+  sources: SourceRef[];
+}
+
+/** A promise or plan, with its trigger. */
+export interface Intention {
+  id: number;
+  project: string | null;
+  what: string | null;
+  owner: string | null;
+  trigger: "time" | "context" | "person" | "event" | null;
+  /** when it is due, for a time */
+  at: string | null;
+  /** its trigger in words: "when testing ends" */
+  when: string | null;
+  status: "open" | "done" | "dropped" | null;
+  sources: SourceRef[];
+}
+
+/** How well the memory answers about its own work, from the questions it asks itself each night. */
+export interface MemoryHealth {
+  health: number | null;
+  tested_at: string | null;
+  asked: number;
+  score: number | null;
+  items: Array<{ question: string | null; expected: string | null; answer: string | null; mark: "correct" | "partial" | "wrong" | null }>;
+}
+
+/** What a session opens with. */
+export interface Briefing {
+  project: string | null;
+  /** Put this straight into your prompt. */
+  briefing: string;
+  now: State[];
+  due: Intention[];
+  lessons: Lesson[];
+  episodes: Episode[];
+  memories: Memory[];
+}
+
 export interface Graph {
   nodes: Array<{ id: string; label: string; type: string; memories: number }>;
   edges: Array<{ from: string; to: string; label: string; memory_ids: number[] }>;
@@ -460,13 +654,20 @@ export interface SpaceRow {
 
 export interface ChatMessage {
   role: string;
-  /** The words: a string, or the blocks or parts your framework holds (Anthropic, OpenAI). Only text is
-   *  kept; null is a turn that said nothing in words, such as one that only called a tool. */
+  /** The words: a string, or the blocks or parts your framework holds (Anthropic, OpenAI), tool calls and tool
+   *  results included. Facts come only from what was said; a tool's call and output tell Geniffy what
+   *  happened. */
   content?: string | unknown[] | null;
   /** Or the parts, as the Vercel AI SDK and Gemini hold a message. */
   parts?: unknown[];
   /** Who, when the role does not say: a tool name, a participant. */
   name?: string;
+  /** The tools an assistant called, as OpenAI and LangChain hold them. */
+  tool_calls?: unknown[];
+  /** For a tool result, the call it answers. */
+  tool_call_id?: string;
+  /** When it was said, ISO 8601, if your app keeps it. */
+  time?: string;
 }
 
 /** When a note or conversation from the past was said: a Date, or an ISO 8601 string (2026-03-04,
@@ -496,12 +697,20 @@ export type AddInput =
   | ({ url: string; title?: string } & ExternalId & WithLabels)
   /** A conversation as your framework already holds it. System and developer messages are skipped, and
    *  who said what is kept, so the user's words become facts about the user and not about your assistant. */
-  | ({ messages: ChatMessage[]; title?: string } & SaidAt & ExternalId & WithLabels);
+  | ({ messages: ChatMessage[]; title?: string } & SaidAt & ExternalId & WithLabels)
+  /** The next turns of an agent's or a chat's session: each call adds its messages to one memory for the whole
+   *  session, however long it gets, so send only what is new since the last call (session().save() works that out). */
+  | ({ messages: ChatMessage[]; session: string; title?: string } & WithLabels);
 
 // The body the API takes: saidAt goes as said_at, a Date as its moment in UTC; externalId as external_id.
 function addBody(input: AddInput): Record<string, unknown> {
   const given = typeof input === "string" ? { text: input } : input;
   const { saidAt, externalId, ...rest } = given as typeof given & SaidAt & ExternalId;
+  if ((rest as { session?: unknown }).session !== undefined) {   // the API says the same: refused before anything is sent
+    if (!("messages" in rest)) throw new TypeError("session goes with messages: the turns of the session.");
+    if (externalId !== undefined) throw new TypeError("Send session or externalId, not both: the session is the source's id.");
+    if (saidAt !== undefined) throw new TypeError("saidAt does not go with session: each turn is dated as it arrives.");
+  }
   const body: Record<string, unknown> = { ...rest };
   if (saidAt !== undefined) body.said_at = saidAt instanceof Date ? saidAt.toISOString() : String(saidAt);
   if (externalId !== undefined) body.external_id = String(externalId);
@@ -840,6 +1049,63 @@ export class Files {
   async move(from: string, to: string): Promise<number> {
     const out = await this.client.request<{ moved: number }>("POST", "/v1/files/move", { json: { from, to } });
     return out.moved ?? 0;
+  }
+}
+
+// ── sessions saved as they go ─────────────────────────────────────────────────────────────────────────────
+const SESSION_CALL = 500;   // the most messages one call takes
+
+// A message written out with its keys in order, so the same message reads the same however it was built.
+function stable(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;
+  if (value && typeof value === "object") {
+    const o = value as Record<string, unknown>;
+    return `{${Object.keys(o).sort().filter((k) => o[k] !== undefined).map((k) => `${JSON.stringify(k)}:${stable(o[k])}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+/**
+ * An agent's or a chat's session, saved as it goes into one memory for the whole session. Hand save() the whole
+ * conversation after each turn: only the messages after the last one it sent go to Geniffy, at most 500 a call, so a
+ * session of any length is never sent twice. When that message is no longer there (the agent rewrote or compacted
+ * its history), what it holds now is saved again rather than lost. Made by client.session(id).
+ */
+export class Session {
+  #last: string | null = null;
+  readonly id: string;
+  readonly title?: string;
+  readonly labels?: Labels;
+
+  constructor(private readonly client: Geniffy, id: string, opts: { title?: string } & WithLabels = {}) {
+    this.id = String(id);
+    this.title = opts.title;
+    this.labels = opts.labels;
+  }
+
+  /** Sends what is new; resolves to the session's source, or null when nothing was new. */
+  async save(messages: ChatMessage[]): Promise<Source | null> {
+    const all = [...messages];
+    let from = 0;
+    if (this.#last !== null) {
+      for (let i = all.length - 1; i >= 0; i--) {
+        if (stable(all[i]) === this.#last) {
+          from = i + 1;
+          break;
+        }
+      }
+    }
+    const fresh = all.slice(from);
+    let source: Source | null = null;
+    for (let i = 0; i < fresh.length; i += SESSION_CALL) {
+      const part = fresh.slice(i, i + SESSION_CALL);
+      const input: AddInput = { messages: part, session: this.id };
+      if (this.title) input.title = this.title;
+      if (this.labels) input.labels = this.labels;
+      source = await this.client.memories.add(input);
+      this.#last = stable(part[part.length - 1]);
+    }
+    return source;
   }
 }
 

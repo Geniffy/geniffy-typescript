@@ -41,6 +41,31 @@ await mem.search("renewal", { limit: 5 });            // the raw memories, ranke
 `context()` and `ask()` judge whether anything bears on the question. `search()` ranks and does not
 judge: it returns its best matches for any question at all.
 
+## Agents: open with the briefing, save every turn
+
+An agent, or any chat that runs over many turns, does two things: it opens each session with the briefing, and it
+saves every turn as it goes.
+
+```ts
+const system = await mem.briefing({ project: "checkout", cue: task });   // where things stand, what is due, the
+                                                                         // rules that apply, what happened, then
+                                                                         // the memories, each dated
+const run = mem.session(runId, { title: "Refund agent" });
+// ...
+await run.save(messages);                                                // after every turn: only what is new is sent
+```
+
+`briefing()` is written to go straight into a system prompt. `briefingFull()` has its parts, and each part can be
+read on its own: `now()` (where each project stands), `episodes()`, `lessons()` and `intentions()`;
+`setIntention(id, "done")` marks a promise kept, and `memoryHealth()` says how well the memory answers about its
+own work.
+
+A session's turns go into one memory for the whole session, tool calls and what came back included, in the shapes
+OpenAI, Anthropic, the Vercel AI SDK, Gemini and LangChain hold them. `save()` sends only the messages after the
+last one it sent, 500 at a time, so a session of any length is never sent twice; if your agent rewrites its
+history, what it holds now is saved again rather than lost. Sending the new turns yourself instead:
+`mem.memories.add({ messages: newTurns, session: runId })`.
+
 ## Spaces: one memory per user
 
 A space is your own name for one of your users. Bind a client to it and every call stays inside it.
@@ -152,11 +177,21 @@ Claude wrote, and `clearAllMemory(mem)` deletes it all (both from `geniffy/claud
 calls of one reply at the same time, so the handlers take them one after another: two edits to one file both land.
 `geniffy/claude` needs `@anthropic-ai/sdk` 0.72 or later, an optional peer dependency; `geniffy` itself still has none.
 
+## This month's use
+
+```ts
+await client.usage();   // tokens learned and waiting, answers, what the plan includes, extra learning, when it resets
+```
+
+Saving, briefings, search and recall are free. Past your plan, a source comes back with status `"waiting"`: kept,
+found by search, and learned next month or at once with extra learning on. Only at the fair-use limit does adding
+throw `UsageLimitError`.
+
 ## Errors, retries and request ids
 
 Every error carries the API's own sentence: `AuthenticationError` (a wrong or revoked key),
-`NotFoundError`, `BadRequestError`, `UnreadableError`, `RateLimitError`, `InternalServerError`,
-`APIConnectionError`; all extend `GeniffyError`. Reads, and putting a file (the same text twice is the same
+`NotFoundError`, `BadRequestError`, `UnreadableError`, `RateLimitError`, `UsageLimitError` (this month's use is
+up; not retried), `InternalServerError`, `APIConnectionError`; all extend `GeniffyError`. Reads, and putting a file (the same text twice is the same
 file), are retried twice on network errors, 408, 429 and 5xx; adding is retried only on 429, so a retry never
 saves a note twice. Pass `{ maxRetries, timeout }` to the constructor to change that.
 

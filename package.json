@@ -1,6 +1,6 @@
 {
   "name": "geniffy",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Geniffy for TypeScript and JavaScript: add notes, files and links to a memory, then search it and ask it.",
   "type": "module",
   "main": "./dist/index.js",
@@ -20,7 +20,7 @@
   "engines": { "node": ">=18" },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build && node --test test/client.test.mjs test/claude.test.mjs"
+    "test": "npm run build && node --test test/client.test.mjs test/claude.test.mjs test/briefing.test.mjs test/session-usage.test.mjs"
   },
   "keywords": ["memory", "ai", "agents", "llm", "rag", "geniffy", "claude", "memory-tool"],
   "homepage": "https://docs.geniffy.com/sdks/typescript",
